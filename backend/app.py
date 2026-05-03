@@ -76,7 +76,7 @@ def init_db():
         conn.commit()
 
 
-    init_db()
+init_db()
 
 
 def list_serial_ports():
@@ -163,6 +163,32 @@ def build_remote_payload():
         payload = dict(remote_state)
     payload["connected"] = bool(payload.get("online"))
     return payload
+
+
+def get_latest_db_reading():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT humedad, fecha FROM datos ORDER BY id DESC LIMIT 1"
+        )
+        row = cur.fetchone()
+
+    if not row:
+        return None
+
+    try:
+        updated_at = datetime.fromisoformat(row["fecha"]).timestamp()
+    except ValueError:
+        updated_at = None
+
+    return {
+        "humedad": row["humedad"],
+        "raw": None,
+        "updated_at": updated_at,
+        "connected": True,
+        "error": None,
+    }
 
 
 def set_error(message, connected=False):
@@ -326,6 +352,9 @@ def humedad():
 
 @app.route("/api/latest")
 def api_latest():
+    payload = get_latest_db_reading()
+    if payload is not None:
+        return jsonify(payload)
     return jsonify(build_remote_payload())
 
 
