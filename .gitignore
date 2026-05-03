@@ -1,0 +1,8 @@
+.venv/
+backend/__pycache__/
+backend/*.db
+backend/database.db
+.vercel/
+.DS_Store
+*.pyc
+__pycache__/

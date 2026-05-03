@@ -1,0 +1,590 @@
+const humidityValue = document.getElementById("humidity-value");
+const humidityState = document.getElementById("humidity-state");
+const waterFill = document.getElementById("water-fill");
+const lastUpdated = document.getElementById("last-updated");
+const statusPill = document.getElementById("status-pill");
+const errorBox = document.getElementById("error-box");
+const historyPanel = document.getElementById("history-panel");
+const toggleHistoryBtn = document.getElementById("toggle-history");
+const clearHistoryBtn = document.getElementById("clear-history");
+const connectBtn = document.getElementById("connect-arduino");
+const serialPortInput = document.getElementById("serial-port-input");
+const serialPortList = document.getElementById("serial-port-list");
+const refreshPortsBtn = document.getElementById("refresh-ports");
+
+let historyChart = null;
+let historyVisible = false;
+let port = null;
+let reader = null;
+let isReading = false;
+let lastSaveAt = 0;
+let mode = "web";
+let backendPollingId = null;
+let sessionId = null;
+let pingIntervalId = null;
+let cachedPorts = [];
+let backendConnected = false;
+const SAVE_INTERVAL_MS = 10000;
+const PING_INTERVAL_MS = 30000;
+
+function formatTime(ts) {
+  if (!ts) return "Sin datos";
+  const date = new Date(ts * 1000);
+  return `Ultima lectura: ${date.toLocaleTimeString()}`;
+}
+
+function classifyHumidity(value) {
+  if (value === null || value === undefined) return { label: "--", color: "#90a4b7" };
+  if (value < 30) return { label: "SECO", color: "#ff7043" };
+  if (value <= 70) return { label: "OPTIMO", color: "#66bb6a" };
+  return { label: "HUMEDO", color: "#42a5f5" };
+}
+
+function updateUI(data) {
+  if (!data) return;
+  const value = data.humedad;
+  const status = classifyHumidity(value);
+
+  humidityValue.textContent = value !== null ? value : "--";
+  humidityState.textContent = status.label;
+  humidityState.style.color = status.color;
+
+  const fillValue = value !== null ? value : 0;
+  waterFill.style.transform = `translate(0, ${100 - fillValue}%)`;
+  const waterPalette = getWaterPalette(value);
+  waterFill.style.background = waterPalette.front;
+  const ring = document.getElementById("water-ring");
+  if (ring) {
+    ring.style.setProperty("--water-color", waterPalette.front);
+    ring.style.setProperty("--water-back", waterPalette.back);
+  }
+
+  lastUpdated.textContent = formatTime(data.updated_at);
+
+  if (data.connected) {
+    statusPill.textContent = "Conectado";
+    statusPill.style.color = "#4dd0e1";
+  } else {
+    statusPill.textContent = "Desconectado";
+    statusPill.style.color = "#ffb74d";
+  }
+
+  if (data.error) {
+    errorBox.textContent = data.error;
+  } else {
+    errorBox.textContent = "";
+  }
+}
+
+function setConnected(connected) {
+  if (connected) {
+    statusPill.textContent = "Conectado";
+    statusPill.style.color = "#4dd0e1";
+    connectBtn.textContent = "Desconectar";
+  } else {
+    statusPill.textContent = "Desconectado";
+    statusPill.style.color = "#ffb74d";
+    connectBtn.textContent = "Conectar Sensor";
+  }
+}
+
+function getWaterPalette(value) {
+  if (value === null || value === undefined) {
+    return { front: "#4dd0e1", back: "#c7eeff" };
+  }
+  if (value < 30) {
+    return { front: "#ef4444", back: "#fecaca" };
+  }
+  if (value <= 70) {
+    return { front: "#facc15", back: "#fef3c7" };
+  }
+  return { front: "#22c55e", back: "#bbf7d0" };
+}
+
+function renderSerialPorts(ports, preferredPort) {
+  cachedPorts = Array.isArray(ports) ? ports : [];
+  if (serialPortList) {
+    serialPortList.innerHTML = "";
+    cachedPorts.forEach((portName) => {
+      const option = document.createElement("option");
+      option.value = portName;
+      serialPortList.appendChild(option);
+    });
+  }
+  if (serialPortInput) {
+    const preferred = cachedPorts.includes("COM12") ? "COM12" : preferredPort;
+    if (!serialPortInput.value && preferred) {
+      serialPortInput.value = preferred;
+    }
+    if (!serialPortInput.value && cachedPorts.length > 0) {
+      serialPortInput.value = cachedPorts[0];
+    }
+  }
+}
+
+function getRequestedSerialPort() {
+  const value = serialPortInput?.value?.trim();
+  return value || null;
+}
+
+function shouldUseBackendMode() {
+  return mode === "backend" || backendConnected;
+}
+
+async function fetchHistory() {
+  try {
+    const response = await fetch("/historial");
+    const data = await response.json();
+    console.log("[historial]", data);
+    updateChart(data);
+  } catch (err) {
+    console.error("[historial] error", err);
+  }
+}
+
+async function clearHistory() {
+  try {
+    const response = await fetch("/borrar_historial", { method: "POST" });
+    const data = await response.json();
+    console.log("[borrar_historial]", data);
+    if (data.ok) {
+      updateChart([]);
+    }
+  } catch (err) {
+    console.error("[borrar_historial] error", err);
+  }
+}
+
+function lineBreakTransformer() {
+  let buffer = "";
+  return new TransformStream({
+    transform(chunk, controller) {
+      buffer += chunk;
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      lines.forEach((line) => controller.enqueue(line));
+    },
+    flush(controller) {
+      if (buffer) controller.enqueue(buffer);
+    },
+  });
+}
+
+function parseReading(line) {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+
+  const parts = trimmed.split(/[,;\s]+/).filter(Boolean);
+  const numbers = parts
+    .map((part) => Number.parseFloat(part))
+    .filter((value) => !Number.isNaN(value));
+
+  if (numbers.length === 0) return null;
+
+  if (numbers.length >= 2) {
+    const raw = Math.round(numbers[0]);
+    const percent = Math.round(numbers[1]);
+    if (percent >= 0 && percent <= 100) {
+      return { raw, percent };
+    }
+  }
+
+  const value = Math.round(numbers[0]);
+  if (value >= 0 && value <= 100) {
+    return { raw: null, percent: value };
+  }
+  if (value >= 0 && value <= 1023) {
+    return { raw: value, percent: Math.round((value / 1023) * 100) };
+  }
+  return null;
+}
+
+async function saveReading(humedad, raw) {
+  const now = Date.now();
+  if (now - lastSaveAt < SAVE_INTERVAL_MS) return;
+  lastSaveAt = now;
+  try {
+    await fetch("/guardar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ humedad, raw }),
+    });
+  } catch (err) {
+    console.error("[guardar] error", err);
+  }
+}
+
+async function startReading() {
+  if (!port) return;
+  const textDecoder = new TextDecoderStream();
+  const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+  const stream = textDecoder.readable.pipeThrough(lineBreakTransformer());
+  reader = stream.getReader();
+  isReading = true;
+
+  try {
+    while (isReading) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const reading = parseReading(value || "");
+      if (!reading) continue;
+      const humedad = reading.percent;
+      const raw = reading.raw;
+      const data = {
+        humedad,
+        raw,
+        updated_at: Date.now() / 1000,
+        connected: true,
+        error: null,
+      };
+      updateUI(data);
+      saveReading(humedad, raw);
+    }
+  } catch (err) {
+    console.error("[serial] error", err);
+    errorBox.textContent = "Error leyendo el puerto";
+  } finally {
+    reader?.releaseLock();
+    await readableStreamClosed.catch(() => undefined);
+  }
+}
+
+async function fetchCurrentReading() {
+  try {
+    const response = await fetch("/humedad");
+    const data = await response.json();
+    updateUI(data);
+  } catch (err) {
+    console.error("[humedad] error", err);
+  }
+}
+
+function startBackendPolling() {
+  if (backendPollingId) return;
+  fetchCurrentReading();
+  backendPollingId = setInterval(fetchCurrentReading, 1000);
+}
+
+function stopBackendPolling() {
+  if (!backendPollingId) return;
+  clearInterval(backendPollingId);
+  backendPollingId = null;
+}
+
+async function connectViaBackend() {
+  if (backendConnected) {
+    await disconnectArduino();
+    return;
+  }
+
+  try {
+    if (connectBtn) {
+      connectBtn.disabled = true;
+      connectBtn.textContent = "Conectando...";
+    }
+    const requestedPort = getRequestedSerialPort();
+    errorBox.textContent = requestedPort
+      ? `Conectando por servidor en ${requestedPort}...`
+      : "Buscando Arduino automáticamente...";
+    
+    const payload = {};
+    if (requestedPort) {
+      payload.port = requestedPort;
+    }
+    
+    const response = await fetch("/conectar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    console.log("[conectar] response:", data);
+    if (!response.ok || !data.ok) {
+      throw new Error(data.message || "No se pudo conectar al Arduino");
+    }
+    renderSerialPorts(data.ports || cachedPorts, data.port || data.preferred_port || requestedPort);
+    backendConnected = true;
+    setConnected(true);
+    errorBox.textContent = `Conectado en ${data.port}. Leyendo datos...`;
+    startBackendPolling();
+  } catch (err) {
+    console.error("[backend-serial] connect", err);
+    errorBox.textContent = err?.message || "No se pudo conectar al Arduino";
+    backendConnected = false;
+    setConnected(false);
+    stopBackendPolling();
+  } finally {
+    if (connectBtn) connectBtn.disabled = false;
+  }
+}
+
+async function disconnectArduino() {
+  isReading = false;
+  try {
+    await reader?.cancel();
+  } catch (err) {
+    console.warn("[serial] cancel", err);
+  }
+  try {
+    await port?.close();
+  } catch (err) {
+    console.warn("[serial] close", err);
+  }
+  port = null;
+
+  // Notificar al backend que se desconecta esta sesión
+  if (sessionId) {
+    try {
+      console.log("[disconnect] Notificando servidor, session:", sessionId);
+      const response = await fetch("/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+      const data = await response.json();
+      console.log("[disconnect] respuesta:", data);
+    } catch (err) {
+      console.warn("[disconnect] error", err);
+    }
+  }
+
+  backendConnected = false;
+  stopBackendPolling();
+  setConnected(false);
+  errorBox.textContent = "Desconectado.";
+  console.log("[disconnect] Completo");
+}
+
+async function connectArduino() {
+  if (backendConnected) {
+    await disconnectArduino();
+    return;
+  }
+
+  if (shouldUseBackendMode()) {
+    mode = "backend";
+    await connectViaBackend();
+    return;
+  }
+
+  if (!navigator.serial) {
+    mode = "backend";
+    await connectViaBackend();
+    return;
+  }
+
+  if (port) {
+    await disconnectArduino();
+    return;
+  }
+
+  // Feedback inmediato para móviles: deshabilitar el botón mientras se solicita el puerto
+  try {
+    if (connectBtn) {
+      connectBtn.disabled = true;
+      connectBtn.textContent = "Conectando...";
+    }
+
+    errorBox.textContent = "Selecciona el Sensor en el selector...";
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 9600 });
+    setConnected(true);
+    errorBox.textContent = "Conectado. Leyendo datos...";
+    startReading();
+  } catch (err) {
+    console.error("[serial] connect", err);
+    errorBox.textContent = "No se pudo abrir el puerto";
+    await disconnectArduino();
+  } finally {
+    if (connectBtn) {
+      connectBtn.disabled = false;
+      // si quedó conectado, el texto lo ajusta setConnected(); si no, restauramos
+      if (!port) connectBtn.textContent = "Conectar Sensor";
+    }
+  }
+}
+
+async function initMode() {
+  try {
+    const response = await fetch("/config");
+    const data = await response.json();
+    const webSerialAvailable = !!navigator.serial;
+    renderSerialPorts(data.ports || [], data.serial_port);
+
+    // Si no hay Web Serial en el navegador, usamos backend automáticamente.
+    if (!webSerialAvailable) {
+      mode = "backend";
+      errorBox.textContent = "Tu navegador no soporta Web Serial. Se usara conexion por servidor.";
+      return;
+    }
+
+    // Si el backend indica que no se debe usar Web Serial, respetamos ese modo.
+    if (data && data.use_web_serial === false) {
+      mode = "backend";
+      errorBox.textContent = "Modo servidor activo.";
+      return;
+    }
+
+    mode = "web";
+  } catch (err) {
+    console.warn("[config] error", err);
+    // Si falla config, usamos deteccion basica de navegador.
+    mode = navigator.serial ? "web" : "backend";
+  }
+}
+
+function updateChart(points) {
+  const labels = points.map((p) => p.fecha);
+  const values = points.map((p) => p.humedad);
+
+  if (!historyChart) {
+    const ctx = document.getElementById("history-chart").getContext("2d");
+    historyChart = new Chart(ctx, {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          {
+            label: "Humedad",
+            data: values,
+            borderColor: "#4dd0e1",
+            backgroundColor: "rgba(77, 208, 225, 0.2)",
+            tension: 0.35,
+            fill: true,
+            pointRadius: 3,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { display: false },
+        },
+        scales: {
+          x: {
+            ticks: { color: "#90a4b7" },
+            grid: { color: "rgba(255, 255, 255, 0.04)" },
+          },
+          y: {
+            ticks: { color: "#90a4b7" },
+            grid: { color: "rgba(255, 255, 255, 0.04)" },
+            min: 0,
+            max: 100,
+          },
+        },
+      },
+    });
+    return;
+  }
+
+  historyChart.data.labels = labels;
+  historyChart.data.datasets[0].data = values;
+  historyChart.update();
+}
+
+function toggleHistory() {
+  historyVisible = !historyVisible;
+  historyPanel.classList.toggle("show", historyVisible);
+  toggleHistoryBtn.textContent = historyVisible ? "Ocultar historial" : "Mostrar historial";
+  if (historyVisible) {
+    fetchHistory();
+  }
+}
+
+function startAutoRefresh() {
+  fetchHistory();
+  setInterval(() => {
+    if (historyVisible) {
+      fetchHistory();
+    }
+  }, 2000);
+}
+
+async function sendPing() {
+  try {
+    const response = await fetch("/ping", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId }),
+    });
+    const data = await response.json();
+    if (data.session_id && !sessionId) {
+      sessionId = data.session_id;
+      console.log("[ping] Session ID:", sessionId);
+    }
+    updateUI(data);
+  } catch (err) {
+    console.error("[ping] error", err);
+  }
+}
+
+function startPingLoop() {
+  if (pingIntervalId) return;
+  sendPing();
+  pingIntervalId = setInterval(sendPing, PING_INTERVAL_MS);
+}
+
+function stopPingLoop() {
+  if (!pingIntervalId) return;
+  clearInterval(pingIntervalId);
+  pingIntervalId = null;
+}
+
+if (toggleHistoryBtn) toggleHistoryBtn.addEventListener("click", toggleHistory);
+if (clearHistoryBtn) clearHistoryBtn.addEventListener("click", clearHistory);
+if (refreshPortsBtn) {
+  refreshPortsBtn.addEventListener("click", async () => {
+    try {
+      refreshPortsBtn.disabled = true;
+      const response = await fetch("/config");
+      const data = await response.json();
+      renderSerialPorts(data.ports || [], data.serial_port);
+      errorBox.textContent = cachedPorts.length > 0
+        ? `Puertos detectados: ${cachedPorts.join(", ")}`
+        : "No se detectaron puertos seriales.";
+    } catch (err) {
+      console.error("[ports] refresh error", err);
+      errorBox.textContent = "No se pudo actualizar la lista de puertos";
+    } finally {
+      refreshPortsBtn.disabled = false;
+    }
+  });
+}
+if (connectBtn) {
+  connectBtn.addEventListener("click", connectArduino);
+  // Algunos navegadores móviles responden mejor a eventos táctiles explícitos
+  connectBtn.addEventListener("touchend", (e) => {
+    e.preventDefault();
+    connectArduino();
+  });
+}
+
+// Detectar cuando el usuario cierra/oculta la pestaña y desconectar
+async function handlePageLeave() {
+  console.log("[app] Page leaving or hidden, disconnecting...");
+  stopPingLoop();
+  await disconnectArduino();
+  console.log("[app] Page leaving, disconnected");
+}
+
+document.addEventListener("visibilitychange", () => {
+  console.log("[app] visibilitychange event:", document.hidden ? "HIDDEN" : "VISIBLE");
+  if (document.hidden) {
+    handlePageLeave();
+  }
+});
+
+window.addEventListener("beforeunload", () => {
+  console.log("[app] beforeunload event");
+  handlePageLeave();
+});
+
+window.addEventListener("pagehide", () => {
+  console.log("[app] pagehide event");
+  handlePageLeave();
+});
+
+setConnected(false);
+initMode();
+startPingLoop();
+startAutoRefresh();
