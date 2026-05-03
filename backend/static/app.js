@@ -24,6 +24,7 @@ let sessionId = null;
 let pingIntervalId = null;
 let cachedPorts = [];
 let backendConnected = false;
+let cloudMode = false;
 const SAVE_INTERVAL_MS = 10000;
 const PING_INTERVAL_MS = 30000;
 
@@ -80,11 +81,11 @@ function setConnected(connected) {
   if (connected) {
     statusPill.textContent = "Conectado";
     statusPill.style.color = "#4dd0e1";
-    connectBtn.textContent = "Desconectar";
+    connectBtn.textContent = cloudMode ? "Actualizar lectura" : "Desconectar";
   } else {
-    statusPill.textContent = "Desconectado";
-    statusPill.style.color = "#ffb74d";
-    connectBtn.textContent = "Conectar Sensor";
+    statusPill.textContent = cloudMode ? "Esperando sensor" : "Desconectado";
+    statusPill.style.color = cloudMode ? "#4dd0e1" : "#ffb74d";
+    connectBtn.textContent = cloudMode ? "Actualizar lectura" : "Conectar Sensor";
   }
 }
 
@@ -318,6 +319,20 @@ async function connectViaBackend() {
   }
 }
 
+function setCloudModeUI() {
+  cloudMode = true;
+  const portRow = serialPortInput?.closest(".port-row");
+  if (portRow) {
+    portRow.style.display = "none";
+  }
+  if (connectBtn) {
+    connectBtn.textContent = "Actualizar lectura";
+  }
+  if (errorBox) {
+    errorBox.textContent = "Modo WiFi activo: el sensor publica datos directo a la nube.";
+  }
+}
+
 async function disconnectArduino() {
   isReading = false;
   try {
@@ -356,6 +371,11 @@ async function disconnectArduino() {
 }
 
 async function connectArduino() {
+  if (cloudMode) {
+    await fetchCurrentReading();
+    return;
+  }
+
   if (backendConnected) {
     await disconnectArduino();
     return;
@@ -410,6 +430,13 @@ async function initMode() {
     const data = await response.json();
     const webSerialAvailable = !!navigator.serial;
     renderSerialPorts(data.ports || [], data.serial_port);
+
+    if (data && data.use_web_serial === false) {
+      mode = "cloud";
+      setCloudModeUI();
+      fetchCurrentReading();
+      return;
+    }
 
     // Si no hay Web Serial en el navegador, usamos backend automáticamente.
     if (!webSerialAvailable) {
