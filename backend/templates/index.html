@@ -58,11 +58,11 @@
             <div class="legend-item wet">HUMEDO &gt; 70</div>
           </div>
           <div class="actions">
-            <button class="btn accent" id="connect-arduino">Conectar Sensor</button>
+            <button class="btn accent" id="connect-arduino">Actualizar lectura</button>
             <button class="btn" id="toggle-history">Mostrar historial</button>
             <button class="btn ghost" id="clear-history">Borrar historial</button>
           </div>
-          <div class="port-row">
+          <div class="port-row" id="serial-controls">
             <label for="serial-port-input">Puerto serial</label>
             <div class="port-controls">
               <input id="serial-port-input" list="serial-port-list" type="text" placeholder="COM12" />
@@ -70,7 +70,7 @@
             </div>
             <datalist id="serial-port-list"></datalist>
           </div>
-          <p class="muted">Requiere Chrome/Edge y aceptar permiso de puerto.</p>
+          <p class="muted">La lectura llega desde la nube. No hace falta conectar un puerto local.</p>
           <div class="error" id="error-box"></div>
         </div>
       </section>

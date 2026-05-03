@@ -20,6 +20,7 @@ let isReading = false;
 let lastSaveAt = 0;
 let mode = "web";
 let backendPollingId = null;
+let cloudPollingId = null;
 let sessionId = null;
 let pingIntervalId = null;
 let cachedPorts = [];
@@ -83,7 +84,7 @@ function setConnected(connected) {
     statusPill.style.color = "#4dd0e1";
     connectBtn.textContent = cloudMode ? "Actualizar lectura" : "Desconectar";
   } else {
-    statusPill.textContent = cloudMode ? "Esperando sensor" : "Desconectado";
+    statusPill.textContent = cloudMode ? "Sin datos" : "Desconectado";
     statusPill.style.color = cloudMode ? "#4dd0e1" : "#ffb74d";
     connectBtn.textContent = cloudMode ? "Actualizar lectura" : "Conectar Sensor";
   }
@@ -321,7 +322,7 @@ async function connectViaBackend() {
 
 function setCloudModeUI() {
   cloudMode = true;
-  const portRow = serialPortInput?.closest(".port-row");
+  const portRow = document.getElementById("serial-controls") || serialPortInput?.closest(".port-row");
   if (portRow) {
     portRow.style.display = "none";
   }
@@ -333,7 +334,24 @@ function setCloudModeUI() {
   }
 }
 
+function startCloudPolling() {
+  if (cloudPollingId) return;
+  fetchCurrentReading();
+  cloudPollingId = setInterval(fetchCurrentReading, 3000);
+}
+
+function stopCloudPolling() {
+  if (!cloudPollingId) return;
+  clearInterval(cloudPollingId);
+  cloudPollingId = null;
+}
+
 async function disconnectArduino() {
+  if (cloudMode) {
+    stopCloudPolling();
+    return;
+  }
+
   isReading = false;
   try {
     await reader?.cancel();
@@ -434,7 +452,7 @@ async function initMode() {
     if (data && data.use_web_serial === false) {
       mode = "cloud";
       setCloudModeUI();
-      fetchCurrentReading();
+      startCloudPolling();
       return;
     }
 
@@ -589,6 +607,7 @@ if (connectBtn) {
 // Detectar cuando el usuario cierra/oculta la pestaña y desconectar
 async function handlePageLeave() {
   console.log("[app] Page leaving or hidden, disconnecting...");
+  stopCloudPolling();
   stopPingLoop();
   await disconnectArduino();
   console.log("[app] Page leaving, disconnected");

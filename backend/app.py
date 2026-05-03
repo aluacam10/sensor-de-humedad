@@ -1,14 +1,17 @@
+import json
 import os
 import sqlite3
 import threading
 import time
 from datetime import datetime
+from urllib import parse as urlparse
+from urllib import request as urlrequest
 
 from flask import Flask, jsonify, render_template, request
 
 try:
-    import serial
-    import serial.tools.list_ports
+    import serial  # type: ignore[import-not-found]
+    import serial.tools.list_ports  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - runtime dependency
     serial = None
 
@@ -24,6 +27,19 @@ USE_WEB_SERIAL = os.environ.get("USE_WEB_SERIAL", "0") == "1"
 READ_INTERVAL_SEC = float(os.environ.get("READ_INTERVAL_SEC", "0.2"))
 SAVE_INTERVAL_SEC = float(os.environ.get("SAVE_INTERVAL_SEC", "60"))
 MAX_HISTORY_RECORDS = int(os.environ.get("MAX_HISTORY_RECORDS", "200"))
+
+UPSTASH_REDIS_REST_URL = (
+    os.environ.get("UPSTASH_REDIS_REST_URL")
+    or os.environ.get("KV_REST_API_URL")
+    or os.environ.get("REDIS_REST_URL")
+)
+UPSTASH_REDIS_REST_TOKEN = (
+    os.environ.get("UPSTASH_REDIS_REST_TOKEN")
+    or os.environ.get("KV_REST_API_TOKEN")
+    or os.environ.get("REDIS_REST_API_TOKEN")
+)
+KV_LATEST_KEY = os.environ.get("KV_LATEST_KEY", "sensor:latest")
+KV_HISTORY_KEY = os.environ.get("KV_HISTORY_KEY", "sensor:history")
 
 state_lock = threading.Lock()
 state = {
@@ -59,6 +75,86 @@ serial_thread = None
 save_thread = None
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
+
+
+def has_remote_store():
+    return bool(UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN)
+
+
+def remote_store_request(command_path, method="POST"):
+    if not has_remote_store():
+        return None
+
+    base_url = UPSTASH_REDIS_REST_URL.rstrip("/")
+    url = f"{base_url}/{command_path.lstrip('/')}"
+    headers = {"Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"}
+    req = urlrequest.Request(url, headers=headers, method=method)
+
+    with urlrequest.urlopen(req, timeout=5) as response:
+        raw = response.read().decode("utf-8")
+        return json.loads(raw) if raw else None
+
+
+def kv_command(command, *parts):
+    encoded_parts = [urlparse.quote(str(part), safe="") for part in parts]
+    command_path = "/".join([command, *encoded_parts])
+    return remote_store_request(command_path)
+
+
+def store_sensor_snapshot(payload):
+    if not has_remote_store():
+        return False
+
+    serialized = json.dumps(payload, separators=(",", ":"))
+    kv_command("set", KV_LATEST_KEY, serialized)
+    kv_command("lpush", KV_HISTORY_KEY, serialized)
+    kv_command("ltrim", KV_HISTORY_KEY, 0, MAX_HISTORY_RECORDS - 1)
+    return True
+
+
+def read_latest_snapshot():
+    if has_remote_store():
+        response = kv_command("get", KV_LATEST_KEY)
+        if response and response.get("result"):
+            try:
+                payload = json.loads(response["result"])
+                payload.setdefault("connected", True)
+                payload.setdefault("error", None)
+                return payload
+            except (TypeError, ValueError):
+                pass
+
+    payload = get_latest_db_reading()
+    if payload is not None:
+        return payload
+    return build_remote_payload()
+
+
+def read_history_snapshots(limit=20):
+    if has_remote_store():
+        response = kv_command("lrange", KV_HISTORY_KEY, 0, max(limit - 1, 0))
+        result = response.get("result") if response else None
+        if isinstance(result, list):
+            items = []
+            for item in reversed(result):
+                if not item:
+                    continue
+                try:
+                    items.append(json.loads(item))
+                except (TypeError, ValueError):
+                    continue
+            return items
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT humedad, fecha FROM datos ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        rows = cur.fetchall()
+    data = [{"humedad": row["humedad"], "fecha": row["fecha"]} for row in rows]
+    return list(reversed(data))
 
 
 def init_db():
@@ -352,10 +448,7 @@ def humedad():
 
 @app.route("/api/latest")
 def api_latest():
-    payload = get_latest_db_reading()
-    if payload is not None:
-        return jsonify(payload)
-    return jsonify(build_remote_payload())
+    return jsonify(read_latest_snapshot())
 
 
 @app.route("/config")
@@ -407,16 +500,7 @@ def disconnect():
 @app.route("/historial")
 def historial():
     limit = int(request.args.get("limit", "20"))
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT humedad, fecha FROM datos ORDER BY id DESC LIMIT ?",
-            (limit,),
-        )
-        rows = cur.fetchall()
-    data = [{"humedad": row["humedad"], "fecha": row["fecha"]} for row in rows]
-    return jsonify(list(reversed(data)))
+    return jsonify(read_history_snapshots(limit))
 
 
 @app.route("/api/ingest", methods=["POST"])
@@ -438,8 +522,20 @@ def guardar():
         return jsonify({"ok": False, "message": "Invalid humidity"}), 400
     if humidity < 0 or humidity > 100:
         return jsonify({"ok": False, "message": "Out of range"}), 400
+    snapshot = {
+        "device_id": device_id,
+        "humedad": humidity,
+        "raw": raw,
+        "updated_at": time.time(),
+        "connected": bool(online),
+        "online": bool(online),
+        "rssi": rssi,
+        "error": None,
+    }
     update_state(raw, humidity, connected=True, error=None)
     update_remote_state(device_id, humidity, raw=raw, online=bool(online), rssi=rssi, error=None)
+    if has_remote_store():
+        store_sensor_snapshot(snapshot)
     try:
         save_reading(humidity)
     except Exception as exc:
@@ -450,6 +546,8 @@ def guardar():
 
 @app.route("/borrar_historial", methods=["POST"])
 def borrar_historial():
+    if has_remote_store():
+        kv_command("del", KV_LATEST_KEY, KV_HISTORY_KEY)
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM datos")
