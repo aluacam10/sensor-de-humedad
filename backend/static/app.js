@@ -251,11 +251,11 @@ async function startReading() {
 
 async function fetchCurrentReading() {
   try {
-    const response = await fetch("/humedad");
+    const response = await fetch("/api/latest");
     const data = await response.json();
     updateUI(data);
   } catch (err) {
-    console.error("[humedad] error", err);
+    console.error("[api/latest] error", err);
   }
 }
 

@@ -13,12 +13,13 @@ except ImportError:  # pragma: no cover - runtime dependency
     serial = None
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(APP_DIR, "database.db")
+IS_VERCEL = os.environ.get("VERCEL") == "1"
+DB_PATH = os.path.join("/tmp", "database.db") if IS_VERCEL else os.path.join(APP_DIR, "database.db")
 
 SERIAL_PORT = os.environ.get("SERIAL_PORT", "COM3")
 SERIAL_BAUD = int(os.environ.get("SERIAL_BAUD", "9600"))
 SERIAL_TIMEOUT = float(os.environ.get("SERIAL_TIMEOUT", "1"))
-USE_WEB_SERIAL = os.environ.get("USE_WEB_SERIAL", "1") == "1"
+USE_WEB_SERIAL = os.environ.get("USE_WEB_SERIAL", "0") == "1"
 
 READ_INTERVAL_SEC = float(os.environ.get("READ_INTERVAL_SEC", "0.2"))
 SAVE_INTERVAL_SEC = float(os.environ.get("SAVE_INTERVAL_SEC", "60"))
@@ -30,6 +31,17 @@ state = {
     "raw": None,
     "updated_at": None,
     "connected": False,
+    "error": None,
+}
+
+remote_lock = threading.Lock()
+remote_state = {
+    "device_id": None,
+    "humidity": None,
+    "raw": None,
+    "updated_at": None,
+    "online": False,
+    "rssi": None,
     "error": None,
 }
 
@@ -62,6 +74,9 @@ def init_db():
             """
         )
         conn.commit()
+
+
+    init_db()
 
 
 def list_serial_ports():
@@ -129,6 +144,25 @@ def update_state(raw, percent, connected=True, error=None):
         state["updated_at"] = now
         state["connected"] = connected
         state["error"] = error
+
+
+def update_remote_state(device_id, humidity, raw=None, online=True, rssi=None, error=None):
+    now = time.time()
+    with remote_lock:
+        remote_state["device_id"] = device_id
+        remote_state["humidity"] = humidity
+        remote_state["raw"] = raw
+        remote_state["updated_at"] = now
+        remote_state["online"] = online
+        remote_state["rssi"] = rssi
+        remote_state["error"] = error
+
+
+def build_remote_payload():
+    with remote_lock:
+        payload = dict(remote_state)
+    payload["connected"] = bool(payload.get("online"))
+    return payload
 
 
 def set_error(message, connected=False):
@@ -290,6 +324,11 @@ def humedad():
     return jsonify(payload)
 
 
+@app.route("/api/latest")
+def api_latest():
+    return jsonify(build_remote_payload())
+
+
 @app.route("/config")
 def config():
     return jsonify(
@@ -351,11 +390,15 @@ def historial():
     return jsonify(list(reversed(data)))
 
 
+@app.route("/api/ingest", methods=["POST"])
 @app.route("/guardar", methods=["POST"])
 def guardar():
     payload = request.get_json(silent=True) or {}
+    device_id = payload.get("device_id") or "arduino-01"
     humidity = payload.get("humedad")
     raw = payload.get("raw")
+    online = payload.get("online", True)
+    rssi = payload.get("rssi")
     if humidity is None:
         with state_lock:
             humidity = state["humidity"]
@@ -367,8 +410,13 @@ def guardar():
     if humidity < 0 or humidity > 100:
         return jsonify({"ok": False, "message": "Out of range"}), 400
     update_state(raw, humidity, connected=True, error=None)
-    save_reading(humidity)
-    return jsonify({"ok": True})
+    update_remote_state(device_id, humidity, raw=raw, online=bool(online), rssi=rssi, error=None)
+    try:
+        save_reading(humidity)
+    except Exception as exc:
+        # En serverless puede fallar el almacenamiento local; no bloquea la lectura actual.
+        print(f"[db] Save skipped: {exc}")
+    return jsonify({"ok": True, "device_id": device_id})
 
 
 @app.route("/borrar_historial", methods=["POST"])
