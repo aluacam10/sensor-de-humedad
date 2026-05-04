@@ -69,7 +69,10 @@
                 <option value="">-- Detectando dispositivos --</option>
               </select>
               <button class="btn ghost" id="refresh-devices" type="button">Buscar dispositivos</button>
+              <button class="btn" id="bind-device" type="button" style="display: none;">Vincular</button>
+              <button class="btn ghost" id="unbind-device" type="button" style="display: none;">Desvincular</button>
             </div>
+            <div class="binding-status" id="binding-status">Sensor libre</div>
           </div>
           <div class="port-row" id="serial-controls">
             <label for="serial-port-input">Puerto serial</label>

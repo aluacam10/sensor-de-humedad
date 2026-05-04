@@ -14,6 +14,9 @@ const refreshPortsBtn = document.getElementById("refresh-ports");
 const deviceSelector = document.getElementById("device-selector");
 const deviceSelectorSection = document.getElementById("device-selector-section");
 const refreshDevicesBtn = document.getElementById("refresh-devices");
+const bindDeviceBtn = document.getElementById("bind-device");
+const unbindDeviceBtn = document.getElementById("unbind-device");
+const bindingStatus = document.getElementById("binding-status");
 
 let historyChart = null;
 let historyVisible = false;
@@ -30,8 +33,12 @@ let cachedPorts = [];
 let backendConnected = false;
 let cloudMode = false;
 let selectedDeviceId = null;
+let bindingHeartbeatId = null;
+let lastUserActivityAt = Date.now();
 const SAVE_INTERVAL_MS = 10000;
 const PING_INTERVAL_MS = 30000;
+const BINDING_HEARTBEAT_MS = 30000;
+const BINDING_INACTIVITY_MS = 600000;
 
 function formatTime(ts) {
   if (!ts) return "Sin datos";
@@ -265,6 +272,141 @@ async function fetchCurrentReading() {
   }
 }
 
+function setBindingMessage(message, isError = false) {
+  if (!bindingStatus) return;
+  bindingStatus.textContent = message || "";
+  bindingStatus.dataset.state = isError ? "error" : "ok";
+}
+
+async function refreshBindingStatus() {
+  try {
+    const response = await fetch(`/api/binding/status${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ""}`);
+    const data = await response.json();
+    if (data.bound_device_id) {
+      selectedDeviceId = data.bound_device_id;
+      if (deviceSelector) {
+        deviceSelector.value = data.bound_device_id;
+      }
+      setBindingMessage(
+        data.is_bound_to_me ? `Sensor vinculado a ${data.bound_device_id}` : "Sensor Vinculado con Otro Dispositivo",
+        !data.is_bound_to_me,
+      );
+    } else {
+      setBindingMessage("Sensor libre");
+    }
+    syncBindingButtons(data);
+    return data;
+  } catch (err) {
+    console.error("[binding/status] error", err);
+    return null;
+  }
+}
+
+function syncBindingButtons(bindingData = {}) {
+  const hasSelection = !!selectedDeviceId;
+  const isMine = bindingData.is_bound_to_me || false;
+  const isOther = bindingData.is_bound_to_other || false;
+
+  if (bindDeviceBtn) {
+    bindDeviceBtn.style.display = hasSelection && !isMine ? "inline-flex" : "none";
+    bindDeviceBtn.disabled = !hasSelection || isOther;
+    bindDeviceBtn.textContent = isOther ? "Sensor Vinculado con Otro Dispositivo" : "Vincular";
+  }
+
+  if (unbindDeviceBtn) {
+    unbindDeviceBtn.style.display = isMine ? "inline-flex" : "none";
+  }
+}
+
+function trackUserActivity() {
+  lastUserActivityAt = Date.now();
+}
+
+function registerActivityListeners() {
+  ["mousemove", "mousedown", "keydown", "touchstart", "scroll", "input", "change"].forEach((eventName) => {
+    document.addEventListener(eventName, trackUserActivity, { passive: true });
+  });
+}
+
+function startBindingHeartbeat() {
+  if (bindingHeartbeatId) return;
+  bindingHeartbeatId = setInterval(async () => {
+    if (!sessionId) return;
+    if (Date.now() - lastUserActivityAt > BINDING_INACTIVITY_MS) {
+      await unbindSelectedDevice(true);
+      return;
+    }
+    try {
+      await fetch("/api/binding/heartbeat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+    } catch (err) {
+      console.warn("[binding/heartbeat] error", err);
+    }
+  }, BINDING_HEARTBEAT_MS);
+}
+
+function stopBindingHeartbeat() {
+  if (!bindingHeartbeatId) return;
+  clearInterval(bindingHeartbeatId);
+  bindingHeartbeatId = null;
+}
+
+async function bindSelectedDevice() {
+  if (!sessionId || !selectedDeviceId) return;
+  try {
+    const response = await fetch("/api/bind", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, device_id: selectedDeviceId }),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      setBindingMessage(data.message || "Sensor Vinculado con Otro Dispositivo", true);
+      syncBindingButtons({ is_bound_to_me: false, is_bound_to_other: true });
+      return;
+    }
+    setBindingMessage(`Sensor vinculado a ${selectedDeviceId}`);
+    await refreshBindingStatus();
+    await loadActiveDevices();
+  } catch (err) {
+    console.error("[bind] error", err);
+    setBindingMessage("No se pudo vincular el sensor", true);
+  }
+}
+
+async function unbindSelectedDevice(fromInactivity = false) {
+  if (!sessionId) return;
+  try {
+    const response = await fetch("/api/unbind", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId }),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      if (!fromInactivity) {
+        setBindingMessage(data.message || "No se pudo desvincular", true);
+      }
+      return;
+    }
+    selectedDeviceId = null;
+    if (deviceSelector) {
+      deviceSelector.value = "";
+    }
+    setBindingMessage("Sensor desvinculado");
+    await refreshBindingStatus();
+    await loadActiveDevices();
+  } catch (err) {
+    console.error("[unbind] error", err);
+    if (!fromInactivity) {
+      setBindingMessage("No se pudo desvincular el sensor", true);
+    }
+  }
+}
+
 function startBackendPolling() {
   if (backendPollingId) return;
   fetchCurrentReading();
@@ -326,7 +468,7 @@ async function connectViaBackend() {
 
 async function loadActiveDevices() {
   try {
-    const response = await fetch("/devices");
+    const response = await fetch(`/devices${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ""}`);
     const data = await response.json();
     const devices = data.devices || [];
 
@@ -342,14 +484,15 @@ async function loadActiveDevices() {
       } else {
         const autoOption = document.createElement("option");
         autoOption.value = "";
-        autoOption.textContent = "-- Automático (ultimo dispositivo) --";
+        autoOption.textContent = "-- Selecciona un sensor --";
         deviceSelector.appendChild(autoOption);
 
         devices.forEach((device) => {
           const option = document.createElement("option");
           option.value = device.device_id;
           const rssiStr = device.rssi ? ` (${device.rssi}dBm)` : "";
-          option.textContent = `${device.device_id}: ${device.humedad}%${rssiStr}`;
+          const boundLabel = device.is_bound ? " [Vinculado]" : device.available ? " [Libre]" : " [Ocupado]";
+          option.textContent = `${device.device_id}: ${device.humedad}%${rssiStr}${boundLabel}`;
           deviceSelector.appendChild(option);
         });
       }
@@ -357,13 +500,15 @@ async function loadActiveDevices() {
       if (currentValue) {
         deviceSelector.value = currentValue;
       } else if (devices.length > 0) {
-        deviceSelector.value = devices[devices.length - 1].device_id;
+        const freeDevice = devices.find((device) => device.available && !device.is_bound);
+        deviceSelector.value = freeDevice ? freeDevice.device_id : "";
       }
     }
 
     if (errorBox && devices.length > 0) {
       errorBox.textContent = `${devices.length} dispositivo(s) detectado(s).`;
     }
+    await refreshBindingStatus();
   } catch (err) {
     console.error("[loadActiveDevices] error", err);
     if (errorBox) {
@@ -378,6 +523,7 @@ function onDeviceSelected(event) {
   if (selectedDeviceId && errorBox) {
     errorBox.textContent = `Dispositivo seleccionado: ${selectedDeviceId}`;
   }
+  syncBindingButtons();
 }
 
 async function refreshDevices() {
@@ -403,6 +549,12 @@ function setCloudModeUI() {
     selectorSection.style.display = "grid";
     loadActiveDevices();
   }
+  if (bindDeviceBtn) {
+    bindDeviceBtn.style.display = "inline-flex";
+  }
+  if (unbindDeviceBtn) {
+    unbindDeviceBtn.style.display = "inline-flex";
+  }
   if (connectBtn) {
     connectBtn.textContent = "Actualizar lectura";
   }
@@ -426,6 +578,7 @@ function stopCloudPolling() {
 async function disconnectArduino() {
   if (cloudMode) {
     stopCloudPolling();
+    stopBindingHeartbeat();
     return;
   }
 
@@ -460,6 +613,7 @@ async function disconnectArduino() {
 
   backendConnected = false;
   stopBackendPolling();
+  stopBindingHeartbeat();
   setConnected(false);
   errorBox.textContent = "Desconectado.";
   console.log("[disconnect] Completo");
@@ -530,6 +684,8 @@ async function initMode() {
       mode = "cloud";
       setCloudModeUI();
       startCloudPolling();
+      startBindingHeartbeat();
+      registerActivityListeners();
       return;
     }
 
@@ -537,6 +693,8 @@ async function initMode() {
     if (!webSerialAvailable) {
       mode = "backend";
       errorBox.textContent = "Tu navegador no soporta Web Serial. Se usara conexion por servidor.";
+      startBindingHeartbeat();
+      registerActivityListeners();
       return;
     }
 
@@ -544,14 +702,20 @@ async function initMode() {
     if (data && data.use_web_serial === false) {
       mode = "backend";
       errorBox.textContent = "Modo servidor activo.";
+      startBindingHeartbeat();
+      registerActivityListeners();
       return;
     }
 
     mode = "web";
+    startBindingHeartbeat();
+    registerActivityListeners();
   } catch (err) {
     console.warn("[config] error", err);
     // Si falla config, usamos deteccion basica de navegador.
     mode = navigator.serial ? "web" : "backend";
+    startBindingHeartbeat();
+    registerActivityListeners();
   }
 }
 
@@ -689,6 +853,14 @@ if (refreshDevicesBtn) {
   refreshDevicesBtn.addEventListener("click", refreshDevices);
 }
 
+if (bindDeviceBtn) {
+  bindDeviceBtn.addEventListener("click", bindSelectedDevice);
+}
+
+if (unbindDeviceBtn) {
+  unbindDeviceBtn.addEventListener("click", () => unbindSelectedDevice(false));
+}
+
 // Detectar cuando el usuario cierra/oculta la pestaña y desconectar
 async function handlePageLeave() {
   console.log("[app] Page leaving or hidden, disconnecting...");
@@ -719,3 +891,4 @@ setConnected(false);
 initMode();
 startPingLoop();
 startAutoRefresh();
+refreshBindingStatus();

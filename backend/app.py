@@ -69,6 +69,16 @@ active_devices = {}
 devices_lock = threading.Lock()
 DEVICE_TIMEOUT_SEC = 120
 
+device_binding_lock = threading.Lock()
+bound_device_id = None
+bound_session_id = None
+bound_last_activity = 0.0
+BINDING_TIMEOUT_SEC = 600
+
+activity_lock = threading.Lock()
+session_activity = {}
+ACTIVITY_TIMEOUT_SEC = 600
+
 serial_port_lock = threading.Lock()
 selected_serial_port = SERIAL_PORT
 
@@ -279,6 +289,71 @@ def register_device(device_id, humidity, raw, rssi, online):
         }
 
 
+def touch_session_activity(session_id):
+    if not session_id:
+        return
+    now = time.time()
+    with activity_lock:
+        session_activity[session_id] = now
+
+
+def cleanup_session_activity():
+    now = time.time()
+    with activity_lock:
+        expired = [session_id for session_id, timestamp in session_activity.items() if now - timestamp > ACTIVITY_TIMEOUT_SEC]
+        for session_id in expired:
+            del session_activity[session_id]
+
+
+def release_binding_if_expired():
+    global bound_device_id, bound_session_id, bound_last_activity
+    with device_binding_lock:
+        if bound_device_id and (time.time() - bound_last_activity) > BINDING_TIMEOUT_SEC:
+            bound_device_id = None
+            bound_session_id = None
+            bound_last_activity = 0.0
+
+
+def get_binding_snapshot(session_id=None):
+    release_binding_if_expired()
+    with device_binding_lock:
+        return {
+            "bound_device_id": bound_device_id,
+            "bound_session_id": bound_session_id,
+            "bound_last_activity": bound_last_activity,
+            "is_bound_to_me": bool(session_id and bound_session_id == session_id),
+            "is_bound_to_other": bool(bound_device_id and session_id and bound_session_id not in (None, session_id)),
+        }
+
+
+def bind_device(device_id, session_id):
+    global bound_device_id, bound_session_id, bound_last_activity
+    release_binding_if_expired()
+    now = time.time()
+    with device_binding_lock:
+        if bound_device_id and bound_device_id != device_id and bound_session_id and bound_session_id != session_id:
+            return False, "Sensor Vinculado con Otro Dispositivo"
+        if bound_device_id and bound_device_id == device_id and bound_session_id and bound_session_id != session_id:
+            return False, "Sensor Vinculado con Otro Dispositivo"
+        bound_device_id = device_id
+        bound_session_id = session_id
+        bound_last_activity = now
+        return True, None
+
+
+def unbind_device(session_id=None):
+    global bound_device_id, bound_session_id, bound_last_activity
+    with device_binding_lock:
+        if not bound_device_id:
+            return True, None
+        if session_id and bound_session_id and bound_session_id != session_id:
+            return False, "Sensor Vinculado con Otro Dispositivo"
+        bound_device_id = None
+        bound_session_id = None
+        bound_last_activity = 0.0
+        return True, None
+
+
 def get_active_devices():
     """Retorna lista de Arduinos activos (sin timeout)."""
     now = time.time()
@@ -289,7 +364,14 @@ def get_active_devices():
         ]
         for did in expired_ids:
             del active_devices[did]
-        return list(active_devices.values())
+        devices = list(active_devices.values())
+
+    binding = get_binding_snapshot(request.args.get("session_id"))
+    for device in devices:
+        device["is_bound"] = device.get("device_id") == binding.get("bound_device_id")
+        device["bound_session_id"] = binding.get("bound_session_id") if device["is_bound"] else None
+        device["available"] = not binding.get("bound_device_id") or device["is_bound"]
+    return devices
 
 
 def get_latest_db_reading():
@@ -443,6 +525,13 @@ def cleanup_sessions():
                 print(f"[sessions] Cleaned up {len(expired)} inactive sessions")
 
 
+def cleanup_bindings():
+    while True:
+        release_binding_if_expired()
+        cleanup_session_activity()
+        time.sleep(5.0)
+
+
 def ensure_backend_serial_started():
     global serial_thread, save_thread
     if serial is None:
@@ -502,6 +591,7 @@ def ping():
         session_id = f"anon_{int(time.time() * 1000)}"
     with sessions_lock:
         active_sessions[session_id] = time.time()
+    touch_session_activity(session_id)
     print(f"[ping] Session {session_id} active (total: {len(active_sessions)})")
     with state_lock:
         payload = {
@@ -513,6 +603,47 @@ def ping():
             "session_id": session_id,
         }
     return jsonify(payload)
+
+
+@app.route("/api/binding/status")
+def binding_status():
+    session_id = request.args.get("session_id", "")
+    return jsonify(get_binding_snapshot(session_id))
+
+
+@app.route("/api/binding/heartbeat", methods=["POST"])
+def binding_heartbeat():
+    payload = request.get_json(silent=True) or {}
+    session_id = payload.get("session_id") or request.form.get("session_id", "")
+    touch_session_activity(session_id)
+    return jsonify(get_binding_snapshot(session_id))
+
+
+@app.route("/api/bind", methods=["POST"])
+def api_bind():
+    payload = request.get_json(silent=True) or {}
+    session_id = payload.get("session_id") or request.form.get("session_id", "")
+    device_id = payload.get("device_id") or request.form.get("device_id", "")
+    if not session_id:
+        return jsonify({"ok": False, "message": "Falta session_id"}), 400
+    if not device_id:
+        return jsonify({"ok": False, "message": "Falta device_id"}), 400
+    touch_session_activity(session_id)
+    ok, message = bind_device(device_id, session_id)
+    if not ok:
+        return jsonify({"ok": False, "message": message}), 409
+    return jsonify({"ok": True, "device_id": device_id, "session_id": session_id})
+
+
+@app.route("/api/unbind", methods=["POST"])
+def api_unbind():
+    payload = request.get_json(silent=True) or {}
+    session_id = payload.get("session_id") or request.form.get("session_id", "")
+    touch_session_activity(session_id)
+    ok, message = unbind_device(session_id)
+    if not ok:
+        return jsonify({"ok": False, "message": message}), 409
+    return jsonify({"ok": True})
 
 
 @app.route("/disconnect", methods=["POST"])
@@ -642,4 +773,5 @@ if __name__ == "__main__":
     if not USE_WEB_SERIAL:
         ensure_backend_serial_started()
         threading.Thread(target=cleanup_sessions, daemon=True).start()
+    threading.Thread(target=cleanup_bindings, daemon=True).start()
     app.run(host="0.0.0.0", port=5000, debug=True)

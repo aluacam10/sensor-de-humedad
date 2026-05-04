@@ -234,6 +234,20 @@ h1 {
   box-shadow: 0 0 0 2px rgba(77, 208, 225, 0.2);
 }
 
+.binding-status {
+  font-size: 13px;
+  color: var(--muted);
+  min-height: 18px;
+}
+
+.binding-status[data-state="error"] {
+  color: #ffb74d;
+}
+
+.binding-status[data-state="ok"] {
+  color: #66bb6a;
+}
+
 .port-controls {
   display: flex;
   gap: 10px;
