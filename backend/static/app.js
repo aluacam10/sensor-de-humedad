@@ -53,12 +53,19 @@ function createSessionId() {
 
 function getOrCreateSessionId() {
   const storageKey = "sensor-humedad-session-id";
-  const existing = window.localStorage.getItem(storageKey);
+  const existing = window.sessionStorage.getItem(storageKey);
   if (existing) {
     return existing;
   }
   const generated = createSessionId();
-  window.localStorage.setItem(storageKey, generated);
+  // Session-scoped ID: cada pestana/navegador obtiene una sesion independiente.
+  window.sessionStorage.setItem(storageKey, generated);
+  // Limpia cualquier ID persistido por versiones anteriores para evitar reuso entre aperturas.
+  try {
+    window.localStorage.removeItem(storageKey);
+  } catch (err) {
+    console.warn("[session] localStorage cleanup unavailable", err);
+  }
   return generated;
 }
 
@@ -170,7 +177,8 @@ function shouldUseBackendMode() {
 
 async function fetchHistory() {
   try {
-    const response = await fetch("/historial");
+    const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+    const response = await fetch(`/historial${query}`);
     const data = await response.json();
     console.log("[historial]", data);
     updateChart(data);
@@ -288,7 +296,8 @@ async function startReading() {
 
 async function fetchCurrentReading() {
   try {
-    const response = await fetch("/api/latest");
+    const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+    const response = await fetch(`/api/latest${query}`);
     const data = await response.json();
     updateUI(data);
   } catch (err) {

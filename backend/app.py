@@ -41,6 +41,14 @@ UPSTASH_REDIS_REST_TOKEN = (
 KV_LATEST_KEY = os.environ.get("KV_LATEST_KEY", "sensor:latest")
 KV_HISTORY_KEY = os.environ.get("KV_HISTORY_KEY", "sensor:history")
 
+
+def device_latest_key(device_id):
+    return f"sensor:latest:{device_id}"
+
+
+def device_history_key(device_id):
+    return f"sensor:history:{device_id}"
+
 state_lock = threading.Lock()
 state = {
     "humidity": None,
@@ -78,6 +86,9 @@ BINDING_TIMEOUT_SEC = 600
 activity_lock = threading.Lock()
 session_activity = {}
 ACTIVITY_TIMEOUT_SEC = 600
+
+device_history_lock = threading.Lock()
+device_history = {}
 
 serial_port_lock = threading.Lock()
 selected_serial_port = SERIAL_PORT
@@ -126,6 +137,19 @@ def store_sensor_snapshot(payload):
     return True
 
 
+def store_device_snapshot(device_id, payload):
+    if not has_remote_store() or not device_id:
+        return False
+
+    serialized = json.dumps(payload, separators=(",", ":"))
+    latest_key = device_latest_key(device_id)
+    history_key = device_history_key(device_id)
+    kv_command("set", latest_key, serialized)
+    kv_command("lpush", history_key, serialized)
+    kv_command("ltrim", history_key, 0, MAX_HISTORY_RECORDS - 1)
+    return True
+
+
 def read_latest_snapshot():
     if has_remote_store():
         response = kv_command("get", KV_LATEST_KEY)
@@ -142,6 +166,56 @@ def read_latest_snapshot():
     if payload is not None:
         return payload
     return build_remote_payload()
+
+
+def empty_session_payload(message):
+    return {
+        "device_id": None,
+        "humedad": None,
+        "raw": None,
+        "updated_at": None,
+        "connected": False,
+        "online": False,
+        "rssi": None,
+        "error": message,
+    }
+
+
+def read_device_latest_snapshot(device_id):
+    if not device_id:
+        return empty_session_payload("Selecciona y vincula un sensor")
+
+    if has_remote_store():
+        response = kv_command("get", device_latest_key(device_id))
+        if response and response.get("result"):
+            try:
+                payload = json.loads(response["result"])
+                payload.setdefault("device_id", device_id)
+                payload.setdefault("connected", bool(payload.get("online", True)))
+                payload.setdefault("error", None)
+                return payload
+            except (TypeError, ValueError):
+                pass
+
+    with devices_lock:
+        info = active_devices.get(device_id)
+        if info:
+            return {
+                "device_id": info.get("device_id"),
+                "humedad": info.get("humedad"),
+                "raw": info.get("raw"),
+                "updated_at": info.get("updated_at"),
+                "connected": bool(info.get("online", True)),
+                "online": bool(info.get("online", True)),
+                "rssi": info.get("rssi"),
+                "error": None,
+            }
+
+    latest_global = read_latest_snapshot()
+    if latest_global.get("device_id") == device_id:
+        return latest_global
+
+    return empty_session_payload("No hay lectura disponible para el sensor vinculado")
 
 
 def read_history_snapshots(limit=20):
@@ -169,6 +243,36 @@ def read_history_snapshots(limit=20):
         rows = cur.fetchall()
     data = [{"humedad": row["humedad"], "fecha": row["fecha"]} for row in rows]
     return list(reversed(data))
+
+
+def read_device_history_snapshots(device_id, limit=20):
+    if not device_id:
+        return []
+
+    if has_remote_store():
+        response = kv_command("lrange", device_history_key(device_id), 0, max(limit - 1, 0))
+        result = response.get("result") if response else None
+        if isinstance(result, list):
+            items = []
+            for item in reversed(result):
+                if not item:
+                    continue
+                try:
+                    payload = json.loads(item)
+                    items.append(
+                        {
+                            "humedad": payload.get("humedad"),
+                            "fecha": payload.get("fecha") or payload.get("updated_at"),
+                            "device_id": payload.get("device_id", device_id),
+                        }
+                    )
+                except (TypeError, ValueError):
+                    continue
+            return items
+
+    with device_history_lock:
+        items = list(device_history.get(device_id, []))
+    return items[-limit:]
 
 
 def init_db():
@@ -654,7 +758,18 @@ def humedad():
 
 @app.route("/api/latest")
 def api_latest():
-    return jsonify(read_latest_snapshot())
+    session_id = request.args.get("session_id", "")
+    if not session_id:
+        return jsonify(read_latest_snapshot())
+
+    binding = get_binding_snapshot(session_id)
+    if binding.get("is_bound_to_other"):
+        return jsonify(empty_session_payload("Sensor Vinculado con Otro Dispositivo")), 409
+
+    if not binding.get("is_bound_to_me"):
+        return jsonify(empty_session_payload("Selecciona y vincula un sensor"))
+
+    return jsonify(read_device_latest_snapshot(binding.get("bound_device_id")))
 
 
 @app.route("/config")
@@ -748,7 +863,18 @@ def disconnect():
 @app.route("/historial")
 def historial():
     limit = int(request.args.get("limit", "20"))
-    return jsonify(read_history_snapshots(limit))
+    session_id = request.args.get("session_id", "")
+    if not session_id:
+        return jsonify(read_history_snapshots(limit))
+
+    binding = get_binding_snapshot(session_id)
+    if binding.get("is_bound_to_other"):
+        return jsonify([]), 409
+
+    if not binding.get("is_bound_to_me"):
+        return jsonify([])
+
+    return jsonify(read_device_history_snapshots(binding.get("bound_device_id"), limit))
 
 
 @app.route("/devices")
@@ -788,11 +914,13 @@ def guardar():
         return jsonify({"ok": False, "message": "Invalid humidity"}), 400
     if humidity < 0 or humidity > 100:
         return jsonify({"ok": False, "message": "Out of range"}), 400
+    timestamp_iso = datetime.now().isoformat(timespec="seconds")
     snapshot = {
         "device_id": device_id,
         "humedad": humidity,
         "raw": raw,
         "updated_at": time.time(),
+        "fecha": timestamp_iso,
         "connected": bool(online),
         "online": bool(online),
         "rssi": rssi,
@@ -801,8 +929,14 @@ def guardar():
     update_state(raw, humidity, connected=True, error=None)
     update_remote_state(device_id, humidity, raw=raw, online=bool(online), rssi=rssi, error=None)
     register_device(device_id, humidity, raw, rssi, bool(online))
+    with device_history_lock:
+        history = device_history.setdefault(device_id, [])
+        history.append({"humedad": humidity, "fecha": timestamp_iso, "device_id": device_id})
+        if len(history) > MAX_HISTORY_RECORDS:
+            del history[:-MAX_HISTORY_RECORDS]
     if has_remote_store():
         store_sensor_snapshot(snapshot)
+        store_device_snapshot(device_id, snapshot)
     try:
         save_reading(humidity)
     except Exception as exc:
