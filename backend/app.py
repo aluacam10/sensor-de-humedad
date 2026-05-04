@@ -456,9 +456,21 @@ def get_binding_snapshot(session_id=None):
                     if resp and resp.get("result"):
                         try:
                             data = json.loads(resp["result"])
-                            device_id = data.get("device_id")
-                            bound_sid = data.get("session_id")
-                            timestamp = data.get("timestamp", 0.0)
+                            candidate_device_id = data.get("device_id")
+                            candidate_sid = data.get("session_id")
+                            candidate_ts = float(data.get("timestamp", 0.0) or 0.0)
+
+                            # Ignora bindings vencidos y limpia Redis para evitar bloqueos falsos.
+                            if candidate_ts and (time.time() - candidate_ts) > BINDING_TIMEOUT_SEC:
+                                try:
+                                    kv_command("del", f"binding:data:{did}")
+                                except Exception:
+                                    pass
+                                continue
+
+                            device_id = candidate_device_id
+                            bound_sid = candidate_sid
+                            timestamp = candidate_ts
                             if device_id:
                                 break
                         except (TypeError, ValueError):
@@ -498,7 +510,23 @@ def bind_device(device_id, session_id):
         try:
             resp = kv_command("get", f"binding:data:{device_id}")
             if resp and resp.get("result"):
-                return False, "Sensor Vinculado con Otro Dispositivo"
+                try:
+                    data = json.loads(resp["result"])
+                    existing_sid = data.get("session_id")
+                    existing_ts = float(data.get("timestamp", 0.0) or 0.0)
+
+                    # Si el binding remoto ya vencio, se limpia y se permite vincular.
+                    if existing_ts and (time.time() - existing_ts) > BINDING_TIMEOUT_SEC:
+                        try:
+                            kv_command("del", f"binding:data:{device_id}")
+                        except Exception:
+                            pass
+                    # Si ya pertenece a esta misma sesion, se permite refrescar sin bloquear.
+                    elif existing_sid and existing_sid != session_id:
+                        return False, "Sensor Vinculado con Otro Dispositivo"
+                except (TypeError, ValueError):
+                    # Si el dato remoto esta corrupto, no bloqueamos y permitimos sobrescribir.
+                    pass
         except Exception as e:
             print(f"[bind_device] Redis check failed: {e}")
 
