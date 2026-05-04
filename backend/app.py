@@ -40,6 +40,7 @@ UPSTASH_REDIS_REST_TOKEN = (
 )
 KV_LATEST_KEY = os.environ.get("KV_LATEST_KEY", "sensor:latest")
 KV_HISTORY_KEY = os.environ.get("KV_HISTORY_KEY", "sensor:history")
+KV_DEVICES_KEY = os.environ.get("KV_DEVICES_KEY", "sensor:devices")
 
 
 def device_latest_key(device_id):
@@ -171,8 +172,8 @@ def read_latest_snapshot():
 def empty_session_payload(message):
     return {
         "device_id": None,
-        "humedad": None,
-        "raw": None,
+        "humedad": 0,
+        "raw": 0,
         "updated_at": None,
         "connected": False,
         "online": False,
@@ -273,6 +274,25 @@ def read_device_history_snapshots(device_id, limit=20):
     with device_history_lock:
         items = list(device_history.get(device_id, []))
     return items[-limit:]
+
+
+def get_known_device_ids():
+    ids = set()
+    with devices_lock:
+        ids.update(active_devices.keys())
+
+    if has_remote_store():
+        try:
+            response = kv_command("smembers", KV_DEVICES_KEY)
+            result = response.get("result") if response else None
+            if isinstance(result, list):
+                for item in result:
+                    if item:
+                        ids.add(str(item))
+        except Exception as exc:
+            print(f"[devices] Redis smembers failed: {exc}")
+
+    return list(ids)
 
 
 def init_db():
@@ -429,8 +449,7 @@ def get_binding_snapshot(session_id=None):
     # If remote store available, try to read per-device binding keys for active devices
     if has_remote_store():
         try:
-            with devices_lock:
-                device_ids = list(active_devices.keys())
+            device_ids = get_known_device_ids()
             for did in device_ids:
                 try:
                     resp = kv_command("get", f"binding:data:{did}")
@@ -554,7 +573,31 @@ def get_active_devices():
         ]
         for did in expired_ids:
             del active_devices[did]
-        devices = list(active_devices.values())
+        devices_map = {did: dict(info) for did, info in active_devices.items()}
+
+    # En serverless, complementar con dispositivos conocidos en Redis
+    if has_remote_store():
+        for did in get_known_device_ids():
+            if did in devices_map:
+                continue
+            snapshot = read_device_latest_snapshot(did)
+            updated_at = snapshot.get("updated_at")
+            try:
+                updated_at_val = float(updated_at) if updated_at is not None else 0.0
+            except (TypeError, ValueError):
+                updated_at_val = 0.0
+            if updated_at_val and (now - updated_at_val) > DEVICE_TIMEOUT_SEC:
+                continue
+            devices_map[did] = {
+                "device_id": did,
+                "humedad": snapshot.get("humedad"),
+                "raw": snapshot.get("raw"),
+                "rssi": snapshot.get("rssi"),
+                "online": bool(snapshot.get("online", snapshot.get("connected", False))),
+                "updated_at": updated_at_val,
+            }
+
+    devices = list(devices_map.values())
 
     binding = get_binding_snapshot(request.args.get("session_id"))
     for device in devices:
@@ -937,6 +980,10 @@ def guardar():
     if has_remote_store():
         store_sensor_snapshot(snapshot)
         store_device_snapshot(device_id, snapshot)
+        try:
+            kv_command("sadd", KV_DEVICES_KEY, device_id)
+        except Exception as exc:
+            print(f"[guardar] Failed to register device in Redis set: {exc}")
     try:
         save_reading(humidity)
     except Exception as exc:
