@@ -322,7 +322,8 @@ def get_binding_snapshot(session_id=None):
             "bound_session_id": bound_session_id,
             "bound_last_activity": bound_last_activity,
             "is_bound_to_me": bool(session_id and bound_session_id == session_id),
-            "is_bound_to_other": bool(bound_device_id and session_id and bound_session_id not in (None, session_id)),
+            "is_bound_to_other": bool(bound_device_id and (not session_id or bound_session_id not in (None, session_id))),
+            "is_free": not bool(bound_device_id),
         }
 
 
@@ -334,6 +335,8 @@ def bind_device(device_id, session_id):
         if bound_device_id and bound_device_id != device_id and bound_session_id and bound_session_id != session_id:
             return False, "Sensor Vinculado con Otro Dispositivo"
         if bound_device_id and bound_device_id == device_id and bound_session_id and bound_session_id != session_id:
+            return False, "Sensor Vinculado con Otro Dispositivo"
+        if bound_device_id and bound_session_id and bound_session_id != session_id:
             return False, "Sensor Vinculado con Otro Dispositivo"
         bound_device_id = device_id
         bound_session_id = session_id
@@ -668,10 +671,17 @@ def historial():
 @app.route("/devices")
 def devices():
     """Retorna lista de Arduinos WiFi activos detectados."""
+    release_binding_if_expired()
+    binding = get_binding_snapshot(request.args.get("session_id"))
     active = get_active_devices()
+    for device in active:
+        device["is_bound"] = device.get("device_id") == binding.get("bound_device_id")
+        device["bound_session_id"] = binding.get("bound_session_id") if device["is_bound"] else None
+        device["available"] = not binding.get("bound_device_id") or device["is_bound"]
     return jsonify({
         "devices": active,
         "count": len(active),
+        "binding": binding,
         "timestamp": time.time()
     })
 

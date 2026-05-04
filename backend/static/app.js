@@ -40,6 +40,30 @@ const PING_INTERVAL_MS = 30000;
 const BINDING_HEARTBEAT_MS = 30000;
 const BINDING_INACTIVITY_MS = 600000;
 
+function createSessionId() {
+  try {
+    if (window.crypto?.randomUUID) {
+      return `session_${window.crypto.randomUUID()}`;
+    }
+  } catch (err) {
+    console.warn("[session] crypto randomUUID unavailable", err);
+  }
+  return `session_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function getOrCreateSessionId() {
+  const storageKey = "sensor-humedad-session-id";
+  const existing = window.localStorage.getItem(storageKey);
+  if (existing) {
+    return existing;
+  }
+  const generated = createSessionId();
+  window.localStorage.setItem(storageKey, generated);
+  return generated;
+}
+
+sessionId = getOrCreateSessionId();
+
 function formatTime(ts) {
   if (!ts) return "Sin datos";
   const date = new Date(ts * 1000);
@@ -306,10 +330,11 @@ function syncBindingButtons(bindingData = {}) {
   const hasSelection = !!selectedDeviceId;
   const isMine = bindingData.is_bound_to_me || false;
   const isOther = bindingData.is_bound_to_other || false;
+  const isFree = bindingData.is_free !== false;
 
   if (bindDeviceBtn) {
     bindDeviceBtn.style.display = hasSelection && !isMine ? "inline-flex" : "none";
-    bindDeviceBtn.disabled = !hasSelection || isOther;
+    bindDeviceBtn.disabled = !hasSelection || isOther || !isFree;
     bindDeviceBtn.textContent = isOther ? "Sensor Vinculado con Otro Dispositivo" : "Vincular";
   }
 
@@ -471,6 +496,7 @@ async function loadActiveDevices() {
     const response = await fetch(`/devices${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ""}`);
     const data = await response.json();
     const devices = data.devices || [];
+    const bindingData = data.binding || {};
 
     if (deviceSelector) {
       const currentValue = deviceSelector.value;
@@ -508,7 +534,16 @@ async function loadActiveDevices() {
     if (errorBox && devices.length > 0) {
       errorBox.textContent = `${devices.length} dispositivo(s) detectado(s).`;
     }
-    await refreshBindingStatus();
+    if (bindingData.bound_device_id) {
+      selectedDeviceId = bindingData.bound_device_id;
+      setBindingMessage(
+        bindingData.is_bound_to_me ? `Sensor vinculado a ${bindingData.bound_device_id}` : "Sensor Vinculado con Otro Dispositivo",
+        !bindingData.is_bound_to_me,
+      );
+    } else {
+      setBindingMessage("Sensor libre");
+    }
+    syncBindingButtons(bindingData);
   } catch (err) {
     console.error("[loadActiveDevices] error", err);
     if (errorBox) {
@@ -547,7 +582,6 @@ function setCloudModeUI() {
   const selectorSection = document.getElementById("device-selector-section");
   if (selectorSection) {
     selectorSection.style.display = "grid";
-    loadActiveDevices();
   }
   if (bindDeviceBtn) {
     bindDeviceBtn.style.display = "inline-flex";
@@ -686,6 +720,7 @@ async function initMode() {
       startCloudPolling();
       startBindingHeartbeat();
       registerActivityListeners();
+      await loadActiveDevices();
       return;
     }
 
@@ -695,6 +730,7 @@ async function initMode() {
       errorBox.textContent = "Tu navegador no soporta Web Serial. Se usara conexion por servidor.";
       startBindingHeartbeat();
       registerActivityListeners();
+      await loadActiveDevices();
       return;
     }
 
@@ -704,18 +740,21 @@ async function initMode() {
       errorBox.textContent = "Modo servidor activo.";
       startBindingHeartbeat();
       registerActivityListeners();
+      await loadActiveDevices();
       return;
     }
 
     mode = "web";
     startBindingHeartbeat();
     registerActivityListeners();
+    await loadActiveDevices();
   } catch (err) {
     console.warn("[config] error", err);
     // Si falla config, usamos deteccion basica de navegador.
     mode = navigator.serial ? "web" : "backend";
     startBindingHeartbeat();
     registerActivityListeners();
+    await loadActiveDevices();
   }
 }
 
@@ -891,4 +930,3 @@ setConnected(false);
 initMode();
 startPingLoop();
 startAutoRefresh();
-refreshBindingStatus();
