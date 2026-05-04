@@ -335,7 +335,7 @@ function syncBindingButtons(bindingData = {}) {
   if (bindDeviceBtn) {
     bindDeviceBtn.style.display = hasSelection ? "inline-flex" : "none";
     bindDeviceBtn.disabled = !hasSelection || isOther || !isFree;
-    bindDeviceBtn.textContent = isOther ? "Sensor Vinculado con Otro Dispositivo" : "Vincular";
+    bindDeviceBtn.textContent = "Vincular";
   }
 
   if (unbindDeviceBtn) {
