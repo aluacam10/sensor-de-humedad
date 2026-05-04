@@ -315,26 +315,44 @@ def release_binding_if_expired():
 
 
 def get_binding_snapshot(session_id=None):
-    \"\"\"Get current binding state. For serverless, check Redis first.\"\"\"\n    release_binding_if_expired()
-    
-    # Try Redis first (for serverless instances)\n    device_id = None
+    """Get current binding state. For serverless, check Redis first."""
+    release_binding_if_expired()
+
+    device_id = None
     bound_sid = None
     timestamp = 0.0
-    
+
+    # If remote store available, try to read per-device binding keys for active devices
     if has_remote_store():
         try:
-            # Get all current bindings from Redis\n            response = kv_command("keys", "binding:data:*")\n            if response and response.get("result"):\n                binding_keys = response["result"]\n                for key in binding_keys:\n                    data_resp = kv_command("get", key)\n                    if data_resp and data_resp.get("result"):\n                        try:
-                            data = json.loads(data_resp["result"])\n                            device_id = data.get("device_id")
+            with devices_lock:
+                device_ids = list(active_devices.keys())
+            for did in device_ids:
+                try:
+                    resp = kv_command("get", f"binding:data:{did}")
+                    if resp and resp.get("result"):
+                        try:
+                            data = json.loads(resp["result"])
+                            device_id = data.get("device_id")
                             bound_sid = data.get("session_id")
-                            timestamp = data.get("timestamp", 0.0)\n                            break  # Found active binding\n                        except (TypeError, ValueError):
-                            pass
+                            timestamp = data.get("timestamp", 0.0)
+                            if device_id:
+                                break
+                        except (TypeError, ValueError):
+                            continue
+                except Exception:
+                    continue
         except Exception as e:
-            print(f"[get_binding_snapshot] Redis lookup failed: {e}")\n            pass
-    
-    # Fall back to local state if Redis not available\n    if not device_id:\n        with device_binding_lock:
+            print(f"[get_binding_snapshot] Redis lookup failed: {e}")
+
+    # Fall back to local state if Redis not available or no bindings found
+    if not device_id:
+        with device_binding_lock:
             device_id = bound_device_id
             bound_sid = bound_session_id
             timestamp = bound_last_activity
+    
+    print(f"[get_binding_snapshot] session={session_id} bound_device={device_id} bound_session={bound_sid}")
     
     return {
         "bound_device_id": device_id,
@@ -347,26 +365,21 @@ def get_binding_snapshot(session_id=None):
 
 
 def bind_device(device_id, session_id):
-    """Bind device with distributed lock support for serverless."""
+    """Bind device. Use Redis as authoritative store when available."""
     global bound_device_id, bound_session_id, bound_last_activity
     release_binding_if_expired()
     now = time.time()
-    
-    # Try Redis lock first (for serverless / distributed)
+
+    # If remote store available, check if device already bound in Redis
     if has_remote_store():
-        lock_key = f"binding:lock:{device_id}"
-        lock_value = f"{session_id}:{now}"
-        # Try to acquire lock with NX (set if not exists) and EX (expire in 5 sec)
         try:
-            response = kv_command("set", lock_key, lock_value, "NX", "EX", "5")
-            if not response or not response.get("result"):
-                # Lock failed - device already locked
+            resp = kv_command("get", f"binding:data:{device_id}")
+            if resp and resp.get("result"):
                 return False, "Sensor Vinculado con Otro Dispositivo"
         except Exception as e:
-            print(f"[bind_device] Redis lock failed: {e}")
-            # Fall back to local lock
-    
-    # Local lock as fallback
+            print(f"[bind_device] Redis check failed: {e}")
+
+    # Acquire local lock and perform final checks
     with device_binding_lock:
         if bound_device_id and bound_device_id != device_id and bound_session_id and bound_session_id != session_id:
             return False, "Sensor Vinculado con Otro Dispositivo"
@@ -377,26 +390,30 @@ def bind_device(device_id, session_id):
         bound_device_id = device_id
         bound_session_id = session_id
         bound_last_activity = now
-    
-    # Store binding in Redis for persistence across instances
+    print(f"[bind_device] bound locally device={device_id} session={session_id}")
+
+    # Persist binding in Redis (best-effort)
     if has_remote_store():
-        binding_data = {
-            "device_id": device_id,
-            "session_id": session_id,
-            "timestamp": now
-        }
+        binding_data = {"device_id": device_id, "session_id": session_id, "timestamp": now}
         binding_key = f"binding:data:{device_id}"
         try:
-            kv_command("set", binding_key, json.dumps(binding_data), "EX", str(BINDING_TIMEOUT_SEC))
+            kv_command("set", binding_key, json.dumps(binding_data))
+            # set expiry
+            try:
+                kv_command("expire", binding_key, str(BINDING_TIMEOUT_SEC))
+            except Exception:
+                pass
         except Exception as e:
             print(f"[bind_device] Failed to store binding in Redis: {e}")
-    
+        else:
+            print(f"[bind_device] persisted binding in Redis device={device_id} session={session_id}")
+
     return True, None
 
 
 def unbind_device(session_id=None):
     global bound_device_id, bound_session_id, bound_last_activity
-    
+
     with device_binding_lock:
         if not bound_device_id:
             device_to_unbind = None
@@ -404,20 +421,22 @@ def unbind_device(session_id=None):
             device_to_unbind = bound_device_id
             if session_id and bound_session_id and bound_session_id != session_id:
                 return False, "Sensor Vinculado con Otro Dispositivo"
-        
+
         bound_device_id = None
         bound_session_id = None
         bound_last_activity = 0.0
-    
-    # Clean up Redis binding if available\n    if device_to_unbind and has_remote_store():
+    print(f"[unbind_device] unbound locally device={device_to_unbind} by session={session_id}")
+
+    # Clean up Redis binding if available
+    if device_to_unbind and has_remote_store():
         try:
             binding_key = f"binding:data:{device_to_unbind}"
-            lock_key = f"binding:lock:{device_to_unbind}"
             kv_command("del", binding_key)
-            kv_command("del", lock_key)
         except Exception as e:
             print(f"[unbind_device] Failed to clean Redis: {e}")
-    
+        else:
+            print(f"[unbind_device] removed Redis binding for device={device_to_unbind}")
+
     return True, None
 
 
