@@ -597,6 +597,28 @@ def get_active_devices():
                 "updated_at": updated_at_val,
             }
 
+    # Fallback para entornos serverless/sin estado compartido:
+    # si no hay dispositivos activos, intenta derivarlo desde la ultima lectura.
+    if not devices_map:
+        latest = read_latest_snapshot()
+        latest_humidity = latest.get("humedad")
+        latest_updated_at = latest.get("updated_at")
+        if latest_humidity is not None and latest_updated_at:
+            try:
+                latest_updated_val = float(latest_updated_at)
+            except (TypeError, ValueError):
+                latest_updated_val = 0.0
+            if latest_updated_val and (now - latest_updated_val) <= DEVICE_TIMEOUT_SEC:
+                fallback_id = latest.get("device_id") or "arduino-01"
+                devices_map[fallback_id] = {
+                    "device_id": fallback_id,
+                    "humedad": latest_humidity,
+                    "raw": latest.get("raw"),
+                    "rssi": latest.get("rssi"),
+                    "online": bool(latest.get("online", latest.get("connected", False))),
+                    "updated_at": latest_updated_val,
+                }
+
     devices = list(devices_map.values())
 
     binding = get_binding_snapshot(request.args.get("session_id"))
