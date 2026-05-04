@@ -62,6 +62,15 @@
             <button class="btn" id="toggle-history">Mostrar historial</button>
             <button class="btn ghost" id="clear-history">Borrar historial</button>
           </div>
+          <div class="device-row" id="device-selector-section" style="display: none;">
+            <label for="device-selector">Dispositivo WiFi</label>
+            <div class="device-controls">
+              <select id="device-selector">
+                <option value="">-- Detectando dispositivos --</option>
+              </select>
+              <button class="btn ghost" id="refresh-devices" type="button">Buscar dispositivos</button>
+            </div>
+          </div>
           <div class="port-row" id="serial-controls">
             <label for="serial-port-input">Puerto serial</label>
             <div class="port-controls">

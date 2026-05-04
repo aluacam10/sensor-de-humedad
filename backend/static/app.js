@@ -11,6 +11,9 @@ const connectBtn = document.getElementById("connect-arduino");
 const serialPortInput = document.getElementById("serial-port-input");
 const serialPortList = document.getElementById("serial-port-list");
 const refreshPortsBtn = document.getElementById("refresh-ports");
+const deviceSelector = document.getElementById("device-selector");
+const deviceSelectorSection = document.getElementById("device-selector-section");
+const refreshDevicesBtn = document.getElementById("refresh-devices");
 
 let historyChart = null;
 let historyVisible = false;
@@ -26,6 +29,7 @@ let pingIntervalId = null;
 let cachedPorts = [];
 let backendConnected = false;
 let cloudMode = false;
+let selectedDeviceId = null;
 const SAVE_INTERVAL_MS = 10000;
 const PING_INTERVAL_MS = 30000;
 
@@ -320,17 +324,90 @@ async function connectViaBackend() {
   }
 }
 
+async function loadActiveDevices() {
+  try {
+    const response = await fetch("/devices");
+    const data = await response.json();
+    const devices = data.devices || [];
+
+    if (deviceSelector) {
+      const currentValue = deviceSelector.value;
+      deviceSelector.innerHTML = "";
+
+      if (devices.length === 0) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "-- No hay dispositivos detectados --";
+        deviceSelector.appendChild(option);
+      } else {
+        const autoOption = document.createElement("option");
+        autoOption.value = "";
+        autoOption.textContent = "-- Automático (ultimo dispositivo) --";
+        deviceSelector.appendChild(autoOption);
+
+        devices.forEach((device) => {
+          const option = document.createElement("option");
+          option.value = device.device_id;
+          const rssiStr = device.rssi ? ` (${device.rssi}dBm)` : "";
+          option.textContent = `${device.device_id}: ${device.humedad}%${rssiStr}`;
+          deviceSelector.appendChild(option);
+        });
+      }
+
+      if (currentValue) {
+        deviceSelector.value = currentValue;
+      } else if (devices.length > 0) {
+        deviceSelector.value = devices[devices.length - 1].device_id;
+      }
+    }
+
+    if (errorBox && devices.length > 0) {
+      errorBox.textContent = `${devices.length} dispositivo(s) detectado(s).`;
+    }
+  } catch (err) {
+    console.error("[loadActiveDevices] error", err);
+    if (errorBox) {
+      errorBox.textContent = "Error cargando dispositivos.";
+    }
+  }
+}
+
+function onDeviceSelected(event) {
+  selectedDeviceId = event.target.value || null;
+  console.log("[device-selector] selected:", selectedDeviceId);
+  if (selectedDeviceId && errorBox) {
+    errorBox.textContent = `Dispositivo seleccionado: ${selectedDeviceId}`;
+  }
+}
+
+async function refreshDevices() {
+  if (refreshDevicesBtn) {
+    refreshDevicesBtn.disabled = true;
+    refreshDevicesBtn.textContent = "Buscando...";
+  }
+  await loadActiveDevices();
+  if (refreshDevicesBtn) {
+    refreshDevicesBtn.disabled = false;
+    refreshDevicesBtn.textContent = "Buscar dispositivos";
+  }
+}
+
 function setCloudModeUI() {
   cloudMode = true;
   const portRow = document.getElementById("serial-controls") || serialPortInput?.closest(".port-row");
   if (portRow) {
     portRow.style.display = "none";
   }
+  const selectorSection = document.getElementById("device-selector-section");
+  if (selectorSection) {
+    selectorSection.style.display = "grid";
+    loadActiveDevices();
+  }
   if (connectBtn) {
     connectBtn.textContent = "Actualizar lectura";
   }
   if (errorBox) {
-    errorBox.textContent = "Modo WiFi activo: el sensor publica datos directo a la nube.";
+    errorBox.textContent = "Modo WiFi activo: buscando dispositivos...";
   }
 }
 
@@ -602,6 +679,14 @@ if (connectBtn) {
     e.preventDefault();
     connectArduino();
   });
+}
+
+if (deviceSelector) {
+  deviceSelector.addEventListener("change", onDeviceSelected);
+}
+
+if (refreshDevicesBtn) {
+  refreshDevicesBtn.addEventListener("click", refreshDevices);
 }
 
 // Detectar cuando el usuario cierra/oculta la pestaña y desconectar

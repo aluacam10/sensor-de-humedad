@@ -199,6 +199,41 @@ h1 {
   color: var(--muted);
 }
 
+.device-row {
+  margin-top: 16px;
+  display: grid;
+  gap: 8px;
+}
+
+.device-row label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.device-controls {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.device-controls select {
+  flex: 1 1 180px;
+  min-width: 180px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.device-controls select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(77, 208, 225, 0.2);
+}
+
 .port-controls {
   display: flex;
   gap: 10px;

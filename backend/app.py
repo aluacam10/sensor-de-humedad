@@ -65,6 +65,10 @@ active_sessions = {}
 sessions_lock = threading.Lock()
 SESSION_TIMEOUT_SEC = 5
 
+active_devices = {}
+devices_lock = threading.Lock()
+DEVICE_TIMEOUT_SEC = 120
+
 serial_port_lock = threading.Lock()
 selected_serial_port = SERIAL_PORT
 
@@ -259,6 +263,33 @@ def build_remote_payload():
         payload = dict(remote_state)
     payload["connected"] = bool(payload.get("online"))
     return payload
+
+
+def register_device(device_id, humidity, raw, rssi, online):
+    """Registra un Arduino activo cada vez que envía datos."""
+    now = time.time()
+    with devices_lock:
+        active_devices[device_id] = {
+            "device_id": device_id,
+            "humedad": humidity,
+            "raw": raw,
+            "rssi": rssi,
+            "online": online,
+            "updated_at": now,
+        }
+
+
+def get_active_devices():
+    """Retorna lista de Arduinos activos (sin timeout)."""
+    now = time.time()
+    with devices_lock:
+        expired_ids = [
+            did for did, info in active_devices.items()
+            if now - info.get("updated_at", 0) > DEVICE_TIMEOUT_SEC
+        ]
+        for did in expired_ids:
+            del active_devices[did]
+        return list(active_devices.values())
 
 
 def get_latest_db_reading():
@@ -503,6 +534,17 @@ def historial():
     return jsonify(read_history_snapshots(limit))
 
 
+@app.route("/devices")
+def devices():
+    """Retorna lista de Arduinos WiFi activos detectados."""
+    active = get_active_devices()
+    return jsonify({
+        "devices": active,
+        "count": len(active),
+        "timestamp": time.time()
+    })
+
+
 @app.route("/api/ingest", methods=["POST"])
 @app.route("/guardar", methods=["POST"])
 def guardar():
@@ -534,6 +576,7 @@ def guardar():
     }
     update_state(raw, humidity, connected=True, error=None)
     update_remote_state(device_id, humidity, raw=raw, online=bool(online), rssi=rssi, error=None)
+    register_device(device_id, humidity, raw, rssi, bool(online))
     if has_remote_store():
         store_sensor_snapshot(snapshot)
     try:
