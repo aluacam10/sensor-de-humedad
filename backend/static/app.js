@@ -405,6 +405,8 @@ async function bindSelectedDevice() {
     setBindingMessage(`Sensor vinculado a ${selectedDeviceId}`);
     await refreshBindingStatus();
     await loadActiveDevices();
+    await fetchCurrentReading();
+    await fetchHistory();
   } catch (err) {
     console.error("[bind] error", err);
     setBindingMessage("No se pudo vincular el sensor", true);
@@ -572,6 +574,11 @@ function onDeviceSelected(event) {
     errorBox.textContent = `Dispositivo seleccionado: ${selectedDeviceId}`;
   }
   syncBindingButtons();
+
+  // Auto-vincula al seleccionar para evitar el paso manual de "Vincular".
+  if (selectedDeviceId) {
+    bindSelectedDevice();
+  }
 }
 
 async function refreshDevices() {

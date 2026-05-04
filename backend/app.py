@@ -938,8 +938,12 @@ def historial():
 
     if not binding.get("is_bound_to_me"):
         return jsonify([])
+    device_data = read_device_history_snapshots(binding.get("bound_device_id"), limit)
+    if device_data:
+        return jsonify(device_data)
 
-    return jsonify(read_device_history_snapshots(binding.get("bound_device_id"), limit))
+    # Fallback: si aun no hay historial por dispositivo, mostrar historial global reciente.
+    return jsonify(read_history_snapshots(limit))
 
 
 @app.route("/devices")
