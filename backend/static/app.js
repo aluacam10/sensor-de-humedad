@@ -502,8 +502,11 @@ async function connectViaBackend() {
 
 async function loadActiveDevices() {
   try {
-    const response = await fetch(`/devices${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ""}`);
+    const url = `/devices${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ""}`;
+    console.log(`[loadActiveDevices-DEBUG] Fetching ${url} with sessionId=${sessionId}`);
+    const response = await fetch(url);
     const data = await response.json();
+    console.log(`[loadActiveDevices-DEBUG] Response data:`, data);
     const devices = data.devices || [];
     const bindingData = data.binding || {};
 

@@ -926,6 +926,7 @@ def devices():
     release_binding_if_expired()
     binding = get_binding_snapshot(request.args.get("session_id"))
     active = get_active_devices()
+    print(f"[devices-DEBUG] get_active_devices returned {len(active)} devices: {[d.get('device_id') for d in active]}")
     for device in active:
         device["is_bound"] = device.get("device_id") == binding.get("bound_device_id")
         device["bound_session_id"] = binding.get("bound_session_id") if device["is_bound"] else None
@@ -944,6 +945,7 @@ def guardar():
     payload = request.get_json(silent=True) or {}
     device_id = payload.get("device_id") or "arduino-01"
     humidity = payload.get("humedad")
+    print(f"[guardar-DEBUG] Received ingest: device_id={device_id}, humedad={humidity}")
     raw = payload.get("raw")
     online = payload.get("online", True)
     rssi = payload.get("rssi")
