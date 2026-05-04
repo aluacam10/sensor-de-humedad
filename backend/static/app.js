@@ -333,7 +333,7 @@ function syncBindingButtons(bindingData = {}) {
   const isFree = bindingData.is_free !== false;
 
   if (bindDeviceBtn) {
-    bindDeviceBtn.style.display = hasSelection && !isMine ? "inline-flex" : "none";
+    bindDeviceBtn.style.display = hasSelection ? "inline-flex" : "none";
     bindDeviceBtn.disabled = !hasSelection || isOther || !isFree;
     bindDeviceBtn.textContent = isOther ? "Sensor Vinculado con Otro Dispositivo" : "Vincular";
   }
@@ -499,7 +499,6 @@ async function loadActiveDevices() {
     const bindingData = data.binding || {};
 
     if (deviceSelector) {
-      const currentValue = deviceSelector.value;
       deviceSelector.innerHTML = "";
 
       if (devices.length === 0) {
@@ -523,11 +522,14 @@ async function loadActiveDevices() {
         });
       }
 
-      if (currentValue) {
-        deviceSelector.value = currentValue;
-      } else if (devices.length > 0) {
-        const freeDevice = devices.find((device) => device.available && !device.is_bound);
-        deviceSelector.value = freeDevice ? freeDevice.device_id : "";
+      if (bindingData.is_bound_to_me && bindingData.bound_device_id) {
+        deviceSelector.value = bindingData.bound_device_id;
+        selectedDeviceId = bindingData.bound_device_id;
+      } else {
+        deviceSelector.value = "";
+        if (!bindingData.is_bound_to_other) {
+          selectedDeviceId = null;
+        }
       }
     }
 
@@ -535,7 +537,6 @@ async function loadActiveDevices() {
       errorBox.textContent = `${devices.length} dispositivo(s) detectado(s).`;
     }
     if (bindingData.bound_device_id) {
-      selectedDeviceId = bindingData.bound_device_id;
       setBindingMessage(
         bindingData.is_bound_to_me ? `Sensor vinculado a ${bindingData.bound_device_id}` : "Sensor Vinculado con Otro Dispositivo",
         !bindingData.is_bound_to_me,
