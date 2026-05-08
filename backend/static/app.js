@@ -855,7 +855,7 @@ async function sendPing() {
     const data = await response.json();
     if (data.session_id && !sessionId) {
       sessionId = data.session_id;
-      console.log("[ping] Session ID:", sessionId);
+      // debug log removed for production
     }
     updateUI(data);
   } catch (err) {

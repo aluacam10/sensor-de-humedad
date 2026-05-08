@@ -487,7 +487,7 @@ def get_binding_snapshot(session_id=None):
             bound_sid = bound_session_id
             timestamp = bound_last_activity
     
-    print(f"[get_binding_snapshot] session={session_id} bound_device={device_id} bound_session={bound_sid}")
+    # debug log removed for production
     
     return {
         "bound_device_id": device_id,
@@ -852,17 +852,15 @@ def humedad():
 @app.route("/api/latest")
 def api_latest():
     session_id = request.args.get("session_id", "")
-    if not session_id:
-        return jsonify(read_latest_snapshot())
+    if session_id:
+        binding = get_binding_snapshot(session_id)
+        if binding.get("is_bound_to_other"):
+            return jsonify(empty_session_payload("Sensor Vinculado con Otro Dispositivo")), 409
 
-    binding = get_binding_snapshot(session_id)
-    if binding.get("is_bound_to_other"):
-        return jsonify(empty_session_payload("Sensor Vinculado con Otro Dispositivo")), 409
+        if binding.get("is_bound_to_me"):
+            return jsonify(read_device_latest_snapshot(binding.get("bound_device_id")))
 
-    if not binding.get("is_bound_to_me"):
-        return jsonify(empty_session_payload("Selecciona y vincula un sensor"))
-
-    return jsonify(read_device_latest_snapshot(binding.get("bound_device_id")))
+    return jsonify(read_latest_snapshot())
 
 
 @app.route("/config")
@@ -886,7 +884,7 @@ def ping():
     with sessions_lock:
         active_sessions[session_id] = time.time()
     touch_session_activity(session_id)
-    print(f"[ping] Session {session_id} active (total: {len(active_sessions)})")
+    # debug log removed for production
     with state_lock:
         payload = {
             "humedad": state["humidity"],
@@ -957,20 +955,18 @@ def disconnect():
 def historial():
     limit = int(request.args.get("limit", "20"))
     session_id = request.args.get("session_id", "")
-    if not session_id:
-        return jsonify(read_history_snapshots(limit))
+    if session_id:
+        binding = get_binding_snapshot(session_id)
+        if binding.get("is_bound_to_other"):
+            return jsonify([]), 409
 
-    binding = get_binding_snapshot(session_id)
-    if binding.get("is_bound_to_other"):
-        return jsonify([]), 409
+        if binding.get("is_bound_to_me"):
+            device_data = read_device_history_snapshots(binding.get("bound_device_id"), limit)
+            if device_data:
+                return jsonify(device_data)
 
-    if not binding.get("is_bound_to_me"):
-        return jsonify([])
-    device_data = read_device_history_snapshots(binding.get("bound_device_id"), limit)
-    if device_data:
-        return jsonify(device_data)
-
-    # Fallback: si aun no hay historial por dispositivo, mostrar historial global reciente.
+    # Fallback: si la sesion no esta vinculada o aun no hay historial por dispositivo,
+    # mostrar el historial global reciente para que la grafica no quede vacia.
     return jsonify(read_history_snapshots(limit))
 
 
@@ -980,7 +976,7 @@ def devices():
     release_binding_if_expired()
     binding = get_binding_snapshot(request.args.get("session_id"))
     active = get_active_devices()
-    print(f"[devices-DEBUG] get_active_devices returned {len(active)} devices: {[d.get('device_id') for d in active]}")
+    # debug log removed for production
     for device in active:
         device["is_bound"] = device.get("device_id") == binding.get("bound_device_id")
         device["bound_session_id"] = binding.get("bound_session_id") if device["is_bound"] else None
@@ -999,7 +995,7 @@ def guardar():
     payload = request.get_json(silent=True) or {}
     device_id = payload.get("device_id") or "arduino-01"
     humidity = payload.get("humedad")
-    print(f"[guardar-DEBUG] Received ingest: device_id={device_id}, humedad={humidity}")
+    # debug log removed for production
     raw = payload.get("raw")
     online = payload.get("online", True)
     rssi = payload.get("rssi")
