@@ -1,0 +1,20 @@
+{
+  "configurations": [
+    {
+      "name": "Arduino",
+      "includePath": [
+        "${workspaceFolder}",
+        "C:/Users/reric/AppData/Local/Arduino15/packages/arduino/hardware/samd/*/cores/arduino",
+        "C:/Users/reric/AppData/Local/Arduino15/packages/arduino/hardware/samd/*/libraries/WiFiS3/src",
+        "C:/Users/reric/AppData/Local/Arduino15/packages/arduino/hardware/samd/*/libraries/LiquidCrystal/src"
+      ],
+      "defines": [
+        "ARDUINO=10607"
+      ],
+      "cStandard": "c11",
+      "cppStandard": "c++17",
+      "intelliSenseMode": "gcc-arm"
+    }
+  ],
+  "version": 4
+}

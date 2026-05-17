@@ -1,15 +1,34 @@
 {
   "version": 2,
+  "env": {
+    "SERIAL_PORT": "@serial_port",
+    "USE_WEB_SERIAL": "1",
+    "UPSTASH_REDIS_REST_URL": "@upstash_redis_url",
+    "UPSTASH_REDIS_REST_TOKEN": "@upstash_redis_token"
+  },
   "builds": [
     {
       "src": "api/index.py",
-      "use": "@vercel/python"
+      "use": "@vercel/python",
+      "config": {
+        "maxLambdaSize": "50mb",
+        "runtime": "python3.11"
+      }
     }
   ],
   "routes": [
     {
+      "src": "/api/.*",
+      "dest": "api/index.py"
+    },
+    {
       "src": "/(.*)",
       "dest": "api/index.py"
     }
-  ]
+  ],
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 30
+    }
+  }
 }
