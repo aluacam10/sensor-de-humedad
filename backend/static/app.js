@@ -298,12 +298,20 @@ async function fetchCurrentReading() {
   try {
     // Solo mostrar datos si hay dispositivo vinculado
     if (!selectedDeviceId) {
+      console.log("[fetchCurrentReading] No device selected, skipping");
       return;
     }
     
     const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
     const response = await fetch(`/api/latest${query}`);
     const data = await response.json();
+    
+    // Verificar nuevamente que el dispositivo sigue vinculado
+    if (!selectedDeviceId) {
+      console.log("[fetchCurrentReading] Device deselected mid-request, ignoring response");
+      return;
+    }
+    
     updateUI(data);
   } catch (err) {
     console.error("[api/latest] error", err);
