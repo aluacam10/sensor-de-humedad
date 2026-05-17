@@ -10,14 +10,14 @@ int Suelo = 0;
 const uint16_t seco = 900;      // Valor en seco (aire)
 const uint16_t mojado = 200;    // Valor en agua/muy húmedo
 
-// WiFi + API remota
+// WiFi + API remota (Vercel)
 const char WIFI_SSID[] = "ERICKHUAWEI_6080";
 const char WIFI_PASS[] = "123456789";
-const char API_HOST[] = "sensor-de-humedad.vercel.app";
-const int API_PORT = 443;
+const char API_HOST[] = "sensor-de-humedad.vercel.app";  // URL de Vercel
+const int API_PORT = 443;  // HTTPS
 const char API_PATH[] = "/api/ingest";
 
-WiFiSSLClient sslClient;
+WiFiSSLClient client;  // HTTPS
 bool wifiConectado = false;
 int humedad = 0;
 unsigned long lastSendMs = 0;
@@ -29,38 +29,45 @@ bool enviarNube(int humedadPercent, int rawValue) {
     return false;
   }
 
+  Serial.print("[HTTP] Conectando a ");
+  Serial.print(API_HOST);
+  Serial.print(":");
+  Serial.println(API_PORT);
+
   String body = "{";
+  body += "\"device_id\":\"arduino-01\",";
   body += "\"humedad\":" + String(humedadPercent) + ",";
   body += "\"raw\":" + String(rawValue);
   body += "}";
 
-  if (!sslClient.connect(API_HOST, API_PORT)) {
+  if (!client.connect(API_HOST, API_PORT)) {
     Serial.println("[HTTP] No se pudo conectar al host");
     return false;
   }
 
-  sslClient.print(String("POST ") + API_PATH + " HTTP/1.1\r\n");
-  sslClient.print(String("Host: ") + API_HOST + "\r\n");
-  sslClient.print("Content-Type: application/json\r\n");
-  sslClient.print(String("Content-Length: ") + body.length() + "\r\n");
-  sslClient.print("Connection: close\r\n\r\n");
-  sslClient.print(body);
+  Serial.println("[HTTP] Conectado, enviando...");
+  client.print(String("POST ") + API_PATH + " HTTP/1.1\r\n");
+  client.print(String("Host: ") + API_HOST + "\r\n");
+  client.print("Content-Type: application/json\r\n");
+  client.print(String("Content-Length: ") + body.length() + "\r\n");
+  client.print("Connection: close\r\n\r\n");
+  client.print(body);
 
   unsigned long t0 = millis();
-  while (!sslClient.available() && (millis() - t0 < 5000)) {
+  while (!client.available() && (millis() - t0 < 5000)) {
     delay(10);
   }
 
   String statusLine = "";
-  if (sslClient.available()) {
-    statusLine = sslClient.readStringUntil('\n');
+  if (client.available()) {
+    statusLine = client.readStringUntil('\n');
     statusLine.trim();
   }
 
-  while (sslClient.available()) {
-    sslClient.read();
+  while (client.available()) {
+    client.read();
   }
-  sslClient.stop();
+  client.stop();
 
   Serial.print("[HTTP] ");
   Serial.println(statusLine);
@@ -124,15 +131,7 @@ void setup() {
   lcd.setCursor(0, 1);
   lcd.print("Iniciando...");
 
-  // Iniciar calibración
-  long suma = 0;
-  for (int i = 0; i < 50; i++) {
-    suma += analogRead(SensorPin);
-    delay(20);
-  }
-  int base = suma / 50;
-  Serial.print("[BOOT] Base: ");
-  Serial.println(base);
+  Serial.println("[BOOT] Iniciando en modo SENSOR REAL...");
 
   conectarWiFi();
 
@@ -147,26 +146,35 @@ void loop() {
     conectarWiFi();
   }
 
-  // 🔥 PROMEDIO PARA ESTABILIDAD
+  // 🔥 PROMEDIO PARA ESTABILIDAD - Sensor Real
   int suma = 0;
   for(int i = 0; i < 10; i++){
     suma += analogRead(SensorPin);
     delay(10);
   }
-  humedad = suma / 10;
+  int rawValue = suma / 10;
 
-  Serial.println(humedad);
+  Serial.print("[SENSOR] RAW=");
+  Serial.print(rawValue);
+  Serial.print(" -> ");
 
-  // Control original (no se toca)
-  if (humedad >= 870) {
+  // 🔧 CALIBRACIÓN - Valores medidos reales del sensor
+  // Basado en prueba: RAW 0-5 en seco, RAW 400-529 en mojado
+  int sensorMin = 0;    // Valor mínimo (completamente seco/aire)
+  int sensorMax = 529;  // Valor máximo (completamente mojado/agua) - Calibrado
+  
+  Suelo = constrain(rawValue, sensorMin, sensorMax);
+  Suelo = map(Suelo, sensorMin, sensorMax, 0, 100);
+
+  Serial.print(Suelo);
+  Serial.println("%");
+
+  // Control relé
+  if (Suelo >= 70) {
     digitalWrite(7, LOW);
   } else {
     digitalWrite(7, HIGH);
   }
-
-  // 🔧 CALIBRACIÓN CORRECTA
-  humedad = constrain(humedad,mojado, seco);
-  Suelo = map(humedad, seco, mojado, 0, 100);
 
   // LCD
   lcd.setCursor(0, 1);
@@ -177,7 +185,7 @@ void loop() {
 
   if (millis() - lastSendMs >= SEND_INTERVAL_MS) {
     lastSendMs = millis();
-    bool ok = enviarNube(Suelo, humedad);
+    bool ok = enviarNube(Suelo, rawValue);
     Serial.println(ok ? "[CLOUD] envio OK" : "[CLOUD] envio FAIL");
   }
 

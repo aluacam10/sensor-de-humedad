@@ -875,6 +875,12 @@ function startAutoRefresh() {
 
 async function sendPing() {
   try {
+    // Solo mostrar datos si hay dispositivo vinculado
+    if (!selectedDeviceId) {
+      console.log("[sendPing] No device selected, skipping UI update");
+      return;
+    }
+    
     const response = await fetch("/ping", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -885,6 +891,13 @@ async function sendPing() {
       sessionId = data.session_id;
       // debug log removed for production
     }
+    
+    // Verificar nuevamente que sigue vinculado
+    if (!selectedDeviceId) {
+      console.log("[sendPing] Device deselected mid-request, ignoring response");
+      return;
+    }
+    
     updateUI(data);
   } catch (err) {
     console.error("[ping] error", err);

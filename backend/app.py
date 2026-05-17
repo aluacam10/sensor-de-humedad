@@ -285,13 +285,18 @@ def get_known_device_ids():
         try:
             response = kv_command("smembers", KV_DEVICES_KEY)
             result = response.get("result") if response else None
+            print(f"[get_known_device_ids] Redis response: {response}")
             if isinstance(result, list):
                 for item in result:
                     if item:
                         ids.add(str(item))
+                print(f"[get_known_device_ids] Devices from Redis: {list(ids)}")
+            else:
+                print(f"[get_known_device_ids] Unexpected result type: {type(result)}")
         except Exception as exc:
             print(f"[devices] Redis smembers failed: {exc}")
 
+    print(f"[get_known_device_ids] Final device list: {list(ids)}")
     return list(ids)
 
 
@@ -976,6 +981,7 @@ def devices():
     release_binding_if_expired()
     binding = get_binding_snapshot(request.args.get("session_id"))
     active = get_active_devices()
+    print(f"[/devices] Found {len(active)} devices")
     # debug log removed for production
     for device in active:
         device["is_bound"] = device.get("device_id") == binding.get("bound_device_id")
@@ -1033,9 +1039,12 @@ def guardar():
         store_sensor_snapshot(snapshot)
         store_device_snapshot(device_id, snapshot)
         try:
-            kv_command("sadd", KV_DEVICES_KEY, device_id)
+            result = kv_command("sadd", KV_DEVICES_KEY, device_id)
+            print(f"[guardar] Registered device {device_id} in Redis set. Result: {result}")
         except Exception as exc:
-            print(f"[guardar] Failed to register device in Redis set: {exc}")
+            print(f"[guardar] Failed to register device {device_id} in Redis set: {exc}")
+    else:
+        print(f"[guardar] No remote store configured. Device {device_id} not persisted.")
     try:
         save_reading(humidity)
     except Exception as exc:
