@@ -7,7 +7,7 @@ int SensorPin = A0;
 int Suelo = 0;
 
 // 🔧 CALIBRACIÓN REAL
-const uint16_t seco = 720;
+const uint16_t seco = 450;
 const uint16_t mojado = 10;
 
 // WiFi + API remota
