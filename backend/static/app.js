@@ -296,6 +296,11 @@ async function startReading() {
 
 async function fetchCurrentReading() {
   try {
+    // Solo mostrar datos si hay dispositivo vinculado
+    if (!selectedDeviceId) {
+      return;
+    }
+    
     const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
     const response = await fetch(`/api/latest${query}`);
     const data = await response.json();
@@ -400,16 +405,22 @@ async function bindSelectedDevice() {
     if (!response.ok || !data.ok) {
       setBindingMessage(data.message || "Sensor Vinculado con Otro Dispositivo", true);
       syncBindingButtons({ is_bound_to_me: false, is_bound_to_other: true });
+      stopCloudPolling();
       return;
     }
     setBindingMessage(`Sensor vinculado a ${selectedDeviceId}`);
     await refreshBindingStatus();
     await loadActiveDevices();
+    
+    // Iniciar polling solo después de vincular
+    startCloudPolling();
+    
     await fetchCurrentReading();
     await fetchHistory();
   } catch (err) {
     console.error("[bind] error", err);
     setBindingMessage("No se pudo vincular el sensor", true);
+    stopCloudPolling();
   }
 }
 
@@ -433,6 +444,15 @@ async function unbindSelectedDevice(fromInactivity = false) {
       deviceSelector.value = "";
     }
     setBindingMessage("Sensor desvinculado");
+    
+    // Detener polling al desvincular
+    stopCloudPolling();
+    
+    // Limpiar datos del UI
+    humidityValue.textContent = "--";
+    humidityState.textContent = "--";
+    lastUpdated.textContent = "Esperando datos...";
+    
     await refreshBindingStatus();
     await loadActiveDevices();
   } catch (err) {
@@ -737,7 +757,7 @@ async function initMode() {
     if (data && data.use_web_serial === false) {
       mode = "cloud";
       setCloudModeUI();
-      startCloudPolling();
+      // NO iniciar polling aquí - solo después de vincular un dispositivo
       startBindingHeartbeat();
       registerActivityListeners();
       await loadActiveDevices();
