@@ -890,6 +890,18 @@ def ping():
         active_sessions[session_id] = time.time()
     touch_session_activity(session_id)
     # debug log removed for production
+    
+    # 🔒 Validar binding ANTES de devolver datos
+    binding = get_binding_snapshot(session_id)
+    if binding.get("is_bound_to_other"):
+        # Otra sesión tiene este dispositivo
+        return jsonify(empty_session_payload("Sensor Vinculado con Otro Dispositivo"))
+    
+    # Si NO está vinculado a esta sesión, devolver datos vacíos
+    if not binding.get("is_bound_to_me"):
+        return jsonify(empty_session_payload("Selecciona un sensor para ver datos"))
+    
+    # Devolver datos SOLO si está vinculado a esta sesión
     with state_lock:
         payload = {
             "humedad": state["humidity"],
