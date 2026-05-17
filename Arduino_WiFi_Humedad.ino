@@ -7,8 +7,8 @@ int SensorPin = A0;
 int Suelo = 0;
 
 // 🔧 CALIBRACIÓN REAL
-const uint16_t seco = 450;
-const uint16_t mojado = 10;
+const uint16_t seco = 900;      // Valor en seco (aire)
+const uint16_t mojado = 200;    // Valor en agua/muy húmedo
 
 // WiFi + API remota
 const char WIFI_SSID[] = "ERICKHUAWEI_6080";
