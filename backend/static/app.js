@@ -328,6 +328,7 @@ async function refreshBindingStatus() {
   try {
     const response = await fetch(`/api/binding/status${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ""}`);
     const data = await response.json();
+    console.log(`[refreshBindingStatus] Received data:`, data);
     if (data.bound_device_id) {
       selectedDeviceId = data.bound_device_id;
       if (deviceSelector) {
@@ -403,6 +404,7 @@ function stopBindingHeartbeat() {
 
 async function bindSelectedDevice() {
   if (!sessionId || !selectedDeviceId) return;
+  console.log(`[bindSelectedDevice] Attempting to bind device=${selectedDeviceId} to session=${sessionId.substring(0, 10)}...`);
   try {
     const response = await fetch("/api/bind", {
       method: "POST",
@@ -410,12 +412,15 @@ async function bindSelectedDevice() {
       body: JSON.stringify({ session_id: sessionId, device_id: selectedDeviceId }),
     });
     const data = await response.json();
+    console.log(`[bindSelectedDevice] POST /api/bind response:`, response.status, data);
     if (!response.ok || !data.ok) {
+      console.log(`[bindSelectedDevice] Binding failed: ${data.message}`);
       setBindingMessage(data.message || "Sensor Vinculado con Otro Dispositivo", true);
       syncBindingButtons({ is_bound_to_me: false, is_bound_to_other: true });
       stopCloudPolling();
       return;
     }
+    console.log(`[bindSelectedDevice] Binding succeeded, refreshing status...`);
     setBindingMessage(`Sensor vinculado a ${selectedDeviceId}`);
     await refreshBindingStatus();
     await loadActiveDevices();
@@ -533,10 +538,10 @@ async function connectViaBackend() {
 async function loadActiveDevices() {
   try {
     const url = `/devices${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ""}`;
-    console.log(`[loadActiveDevices-DEBUG] Fetching ${url} with sessionId=${sessionId}`);
+    console.log(`[loadActiveDevices] Fetching ${url} with sessionId=${sessionId ? sessionId.substring(0, 10) + '...' : 'none'}`);
     const response = await fetch(url);
     const data = await response.json();
-    console.log(`[loadActiveDevices-DEBUG] Response data:`, data);
+    console.log(`[loadActiveDevices] Response - devices: ${data.devices?.length}, binding:`, data.binding);
     const devices = data.devices || [];
     const bindingData = data.binding || {};
 
@@ -567,6 +572,7 @@ async function loadActiveDevices() {
       if (bindingData.is_bound_to_me && bindingData.bound_device_id) {
         deviceSelector.value = bindingData.bound_device_id;
         selectedDeviceId = bindingData.bound_device_id;
+        console.log(`[loadActiveDevices] Set selectedDeviceId to ${selectedDeviceId}`);
       } else {
         deviceSelector.value = "";
         if (!bindingData.is_bound_to_other) {
@@ -579,8 +585,10 @@ async function loadActiveDevices() {
       errorBox.textContent = `${devices.length} dispositivo(s) detectado(s).`;
     }
     if (bindingData.bound_device_id) {
+      const status = bindingData.is_bound_to_me ? `Sensor vinculado a ${bindingData.bound_device_id}` : "Sensor Vinculado con Otro Dispositivo";
+      console.log(`[loadActiveDevices] Setting binding message: ${status} (is_bound_to_me=${bindingData.is_bound_to_me})`);
       setBindingMessage(
-        bindingData.is_bound_to_me ? `Sensor vinculado a ${bindingData.bound_device_id}` : "Sensor Vinculado con Otro Dispositivo",
+        status,
         !bindingData.is_bound_to_me,
       );
     } else {

@@ -120,6 +120,7 @@ void conectarWiFi() {
 }
 
 void setup() {
+  pinMode(SensorPin, INPUT);      // 📌 Inicializar pin del sensor
   pinMode(7, OUTPUT);
   lcd.begin(16, 2);
   Serial.begin(9600);
@@ -150,13 +151,16 @@ void loop() {
   int suma = 0;
   for(int i = 0; i < 10; i++){
     suma += analogRead(SensorPin);
-    delay(10);
+    delay(5);
   }
   int rawValue = suma / 10;
 
+  // DEBUG: Mostrar valores individuales para diagnosticar
   Serial.print("[SENSOR] RAW=");
   Serial.print(rawValue);
-  Serial.print(" -> ");
+  Serial.print(" (");
+  Serial.print(analogRead(SensorPin));
+  Serial.print(") -> ");
 
   // 🔧 CALIBRACIÓN - Valores medidos reales del sensor
   // Basado en prueba: RAW 0-5 en seco, RAW 400-529 en mojado

@@ -492,16 +492,19 @@ def get_binding_snapshot(session_id=None):
             bound_sid = bound_session_id
             timestamp = bound_last_activity
     
-    # debug log removed for production
-    
-    return {
+    result = {
         "bound_device_id": device_id,
         "bound_session_id": bound_sid,
         "bound_last_activity": timestamp,
         "is_bound_to_me": bool(session_id and bound_sid == session_id),
-        "is_bound_to_other": bool(device_id and (not session_id or bound_sid not in (None, session_id))),
-        "is_free": not bool(device_id),
+        "is_bound_to_other": bool(bound_sid and bound_sid != session_id),
+        "is_free": not bool(bound_sid),
     }
+    
+    if device_id or session_id:
+        print(f"[get_binding_snapshot] session_id={session_id[:10]}{'...' if session_id else ''} device_id={device_id} bound_sid={bound_sid[:10] if bound_sid else 'None'}{'...' if bound_sid else ''} is_bound_to_me={result['is_bound_to_me']} is_bound_to_other={result['is_bound_to_other']}")
+    
+    return result
 
 
 def bind_device(device_id, session_id):
@@ -537,16 +540,15 @@ def bind_device(device_id, session_id):
 
     # Acquire local lock and perform final checks
     with device_binding_lock:
-        if bound_device_id and bound_device_id != device_id and bound_session_id and bound_session_id != session_id:
-            return False, "Sensor Vinculado con Otro Dispositivo"
-        if bound_device_id and bound_device_id == device_id and bound_session_id and bound_session_id != session_id:
-            return False, "Sensor Vinculado con Otro Dispositivo"
+        # Solo rechazar si el device ya está vinculado a OTRA sesión
         if bound_device_id and bound_session_id and bound_session_id != session_id:
+            print(f"[bind_device] REJECTED - device={bound_device_id} already bound to different session")
             return False, "Sensor Vinculado con Otro Dispositivo"
+        # Vincular el dispositivo
         bound_device_id = device_id
         bound_session_id = session_id
         bound_last_activity = now
-    print(f"[bind_device] bound locally device={device_id} session={session_id}")
+    print(f"[bind_device] bound locally device={device_id} session={session_id[:10]}...")
 
     # Persist binding in Redis (best-effort)
     if has_remote_store():
@@ -562,7 +564,7 @@ def bind_device(device_id, session_id):
         except Exception as e:
             print(f"[bind_device] Failed to store binding in Redis: {e}")
         else:
-            print(f"[bind_device] persisted binding in Redis device={device_id} session={session_id}")
+            print(f"[bind_device] persisted binding in Redis device={device_id} session={session_id[:10]}...")
 
     return True, None
 
@@ -856,6 +858,7 @@ def humedad():
 
 @app.route("/api/latest")
 def api_latest():
+    global bound_last_activity
     session_id = request.args.get("session_id", "")
     if session_id:
         binding = get_binding_snapshot(session_id)
@@ -863,6 +866,9 @@ def api_latest():
             return jsonify(empty_session_payload("Sensor Vinculado con Otro Dispositivo")), 409
 
         if binding.get("is_bound_to_me"):
+            # 🔥 Refrescar timestamp de binding cuando se accede a datos
+            with device_binding_lock:
+                bound_last_activity = time.time()
             return jsonify(read_device_latest_snapshot(binding.get("bound_device_id")))
 
     return jsonify(read_latest_snapshot())
@@ -922,10 +928,19 @@ def binding_status():
 
 @app.route("/api/binding/heartbeat", methods=["POST"])
 def binding_heartbeat():
+    global bound_last_activity
     payload = request.get_json(silent=True) or {}
     session_id = payload.get("session_id") or request.form.get("session_id", "")
     touch_session_activity(session_id)
-    return jsonify(get_binding_snapshot(session_id))
+    
+    # 🔥 IMPORTANTE: Actualizar timestamp de binding para mantener la sesión viva
+    binding = get_binding_snapshot(session_id)
+    if binding.get("is_bound_to_me"):
+        with device_binding_lock:
+            bound_last_activity = time.time()
+        print(f"[binding/heartbeat] Updated binding activity for session={session_id[:10]}... device={binding.get('bound_device_id')}")
+    
+    return jsonify(binding)
 
 
 @app.route("/api/bind", methods=["POST"])
@@ -990,15 +1005,18 @@ def historial():
 @app.route("/devices")
 def devices():
     """Retorna lista de Arduinos WiFi activos detectados."""
+    session_id = request.args.get("session_id", "")
     release_binding_if_expired()
-    binding = get_binding_snapshot(request.args.get("session_id"))
+    binding = get_binding_snapshot(session_id)
     active = get_active_devices()
-    print(f"[/devices] Found {len(active)} devices")
-    # debug log removed for production
+    print(f"[/devices] session_id={session_id[:10] if session_id else 'none'}{'...' if session_id else ''} Found {len(active)} devices")
+    print(f"[/devices] binding snapshot: bound_device_id={binding.get('bound_device_id')} is_bound_to_me={binding.get('is_bound_to_me')}")
     for device in active:
         device["is_bound"] = device.get("device_id") == binding.get("bound_device_id")
         device["bound_session_id"] = binding.get("bound_session_id") if device["is_bound"] else None
         device["available"] = not binding.get("bound_device_id") or device["is_bound"]
+        if device["is_bound"]:
+            print(f"[/devices] Device {device['device_id']} is marked as is_bound=True")
     return jsonify({
         "devices": active,
         "count": len(active),
