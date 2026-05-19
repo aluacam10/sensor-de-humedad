@@ -10,14 +10,14 @@ int Suelo = 0;
 const uint16_t seco = 900;      // Valor en seco (aire)
 const uint16_t mojado = 200;    // Valor en agua/muy húmedo
 
-// WiFi + API remota (Local para testing)
+// WiFi + API remota (Producción Vercel)
 const char WIFI_SSID[] = "ERICKHUAWEI_6080";
 const char WIFI_PASS[] = "123456789";
-const char API_HOST[] = "10.5.84.6";  // IP local
-const int API_PORT = 5000;  // Puerto local
+const char API_HOST[] = "sensor-de-humedad.vercel.app";  // Producción
+const int API_PORT = 443;  // HTTPS
 const char API_PATH[] = "/api/ingest";
 
-WiFiClient client;  // Sin HTTPS para local
+WiFiSSLClient client;  // HTTPS para producción
 bool wifiConectado = false;
 int humedad = 0;
 unsigned long lastSendMs = 0;
