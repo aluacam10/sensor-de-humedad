@@ -284,17 +284,24 @@ def get_known_device_ids():
     if has_remote_store():
         try:
             response = kv_command("smembers", KV_DEVICES_KEY)
-            result = response.get("result") if response else None
-            print(f"[get_known_device_ids] Redis response: {response}")
-            if isinstance(result, list):
-                for item in result:
-                    if item:
-                        ids.add(str(item))
-                print(f"[get_known_device_ids] Devices from Redis: {list(ids)}")
-            else:
-                print(f"[get_known_device_ids] Unexpected result type: {type(result)}")
+            print(f"[get_known_device_ids] Raw Redis response: {response}")
+            
+            if response:
+                result = response.get("result")
+                if isinstance(result, list):
+                    # result puede ser ["device1", "device2"] o [["device1"], ["device2"]]
+                    for item in result:
+                        if item:
+                            # Si item es una lista (Upstash a veces retorna así), toma el primer elemento
+                            if isinstance(item, list) and len(item) > 0:
+                                ids.add(str(item[0]))
+                            else:
+                                ids.add(str(item))
+                    print(f"[get_known_device_ids] Devices from Redis: {list(ids)}")
+                else:
+                    print(f"[get_known_device_ids] Result is not a list: {type(result)}")
         except Exception as exc:
-            print(f"[devices] Redis smembers failed: {exc}")
+            print(f"[get_known_device_ids] Redis smembers failed: {exc}")
 
     print(f"[get_known_device_ids] Final device list: {list(ids)}")
     return list(ids)
